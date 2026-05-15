@@ -1,0 +1,27 @@
+
+> project_googledrive@0.0.0 build
+> vite build
+
+rolldown-vite v7.2.5 building client environment for production...
+
+./output.css doesn't exist at build time, it will remain unchanged to be resolved at runtime
+✓ 337 modules transformed.
+✗ Build failed in 531ms
+error during build:
+Build failed with 1 error:
+
+[MISSING_EXPORT] Error: "default" is not exported by "src/components/ProtectedRoute.jsx".
+    ╭─[ src/App.jsx:10:8 ]
+    │
+ 10 │ import ProtectedRoute from "./components/ProtectedRoute";
+    │        ───────┬──────
+    │               ╰──────── Missing export
+────╯
+
+    at aggregateBindingErrorsIntoJsError (file:///C:/Users/kongp/Desktop/project_googledrive/project_googledrive/node_modules/rolldown/dist/shared/src-CYkh2Ybc.mjs:2659:18)
+    at unwrapBindingResult (file:///C:/Users/kongp/Desktop/project_googledrive/project_googledrive/node_modules/rolldown/dist/shared/src-CYkh2Ybc.mjs:2634:128)    
+    at #build (file:///C:/Users/kongp/Desktop/project_googledrive/project_googledrive/node_modules/rolldown/dist/shared/src-CYkh2Ybc.mjs:4433:34)
+    at async buildEnvironment (file:///C:/Users/kongp/Desktop/project_googledrive/project_googledrive/node_modules/vite/dist/node/chunks/node.js:33468:64)
+    at async Object.build (file:///C:/Users/kongp/Desktop/project_googledrive/project_googledrive/node_modules/vite/dist/node/chunks/node.js:33871:19)
+    at async Object.buildApp (file:///C:/Users/kongp/Desktop/project_googledrive/project_googledrive/node_modules/vite/dist/node/chunks/node.js:33868:153)
+    at async CAC.<anonymous> (file:///C:/Users/kongp/Desktop/project_googledrive/project_googledrive/node_modules/vite/dist/node/cli.js:629:3)

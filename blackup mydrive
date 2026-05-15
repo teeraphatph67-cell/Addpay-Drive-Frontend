@@ -1,0 +1,620 @@
+import React, { useState, useEffect, useRef } from "react";
+import { useNavigate, useParams, useLocation } from "react-router-dom"; // เพิ่ม useLocation
+import DriveLayout from "../components/DriveLayout";
+import FileList from "../components/FileList";
+import { FiFolderPlus, FiXCircle } from "react-icons/fi";
+import PreviewModal from "../components/PreviewModal";
+import Popup from "../components/Popup.jsx";
+import RenameModal from "../components/RenameModal.jsx";
+import { API_BASE } from "../api/api.js";
+import { BASE_URL } from "../api/api.js";
+import { FiCheckCircle, FiUploadCloud } from "react-icons/fi";
+import LoadingSpinner from "../components/LoadingSpinner";
+import PageHeader from "../components/PageHeader.jsx";
+
+
+export default function MyDrive() {
+  const { id: folderIdParam } = useParams();
+  const location = useLocation(); // เพิ่ม useLocation
+  const isShareViewer = location.pathname.includes("/share/"); // ตรวจสอบว่าเป็นหน้า share
+  const [loading, setLoading] = useState(false);
+  const currentFolderId = folderIdParam ? Number(folderIdParam) : null;
+  const [selectedItems, setSelectedItems] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [files, setFiles] = useState([]);
+  const [path, setPath] = useState([]);
+  const [previewFile, setPreviewFile] = useState(null);
+  const [renameModal, setRenameModal] = useState({ isOpen: false, item: null });
+
+  const [popup, setPopup] = useState({
+    show: false,
+    message: "",
+    type: "success",
+    onConfirm: null,
+  });
+
+  const uploadButtonRef = useRef();
+  const token = localStorage.getItem("api_token");
+  const navigate = useNavigate();
+  if (location.pathname.includes("/share/")) {
+    return null; // หรือ return <Navigate to="/mydrive" />
+  }
+
+  // ---------------- Download Multiple ----------------
+  const handleDownload = async () => {
+    if (!selectedItems.length) {
+      alert("กรุณาเลือกไฟล์/โฟลเดอร์");
+      return;
+    }
+
+    const itemsPayload = selectedItems.map(i => {
+      const isFile = !!i.file_path || !!i.mime_type;
+      const isFolder = !!i.url_file;
+
+      return {
+        id: i.id,
+        type: isFile ? "file" : isFolder ? "folder" : null,
+      };
+    }).filter(i => i.type); // กัน null หลุดไป backend
+
+    if (!itemsPayload.length) {
+      alert("ไม่สามารถระบุประเภทไฟล์ได้");
+      return;
+    }
+
+    try {
+      const response = await fetch(`${BASE_URL}api/v1/download/multiple`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ items: itemsPayload }),
+      });
+
+      if (!response.ok) throw new Error("Download failed");
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `download_${Date.now()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+      alert("ดาวน์โหลดไม่สำเร็จ");
+    }
+  };
+
+
+
+
+  const showPopup = (msg, type = "success") =>
+    setPopup({ show: true, message: msg, type, onConfirm: null });
+
+  // ---------------- API: Preview Log ----------------
+  const logFileOpen = async (fileId) => {
+    try {
+      await fetch(`${API_BASE}/OpenFile/${fileId}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+    } catch (err) {
+      console.error("Log file open error:", err);
+    }
+  };
+
+  // ---------------- Preview ----------------
+  const handlePreview = async (file) => {
+    console.log("Preview file data:", file);
+
+    if (!file.isFolder && file.id) logFileOpen(file.id);
+
+    let fileToPreview = { ...file };
+
+    if (!file.file_url && file.file_path) {
+      fileToPreview.file_url = `${API_BASE.replace(
+        "/api/v1",
+        ""
+      )}/storage/${file.file_path.replace(/^\/+/, "")}`;
+    }
+
+    // fetch blob สำหรับ video/audio/image
+    const getFileTypeInfo = (file) => {
+      if (!file) return { type: "unknown", name: "ไฟล์ทั่วไป" };
+
+      const mimeType = (file.file_type || file.mime_type || "").toLowerCase();
+      const fileName = (file.file_name || file.name || "").toLowerCase();
+
+      if (
+        mimeType.startsWith("image/") ||
+        /\.(jpg|jpeg|png|gif|bmp|webp|svg)$/i.test(fileName)
+      )
+        return { type: "image" };
+      if (mimeType.includes("pdf") || /\.pdf$/i.test(fileName))
+        return { type: "pdf" };
+      if (
+        mimeType.startsWith("video/") ||
+        /\.(mp4|mov|avi|mkv)$/i.test(fileName)
+      )
+        return { type: "video" };
+      if (mimeType.startsWith("audio/") || /\.(mp3|wav|ogg)$/i.test(fileName))
+        return { type: "audio" };
+      if (mimeType.startsWith("text/") || /\.(txt|md|json)$/i.test(fileName))
+        return { type: "text" };
+      return { type: "unknown" };
+    };
+
+    setPreviewFile(fileToPreview);
+  };
+
+  // ---------------- Flatten folders ----------------
+  const flattenFolders = (folders) => {
+    let result = [];
+    folders.forEach((f) => {
+      result.push(f);
+      if (f.children_recursive_active?.length)
+        result = result.concat(flattenFolders(f.children_recursive_active));
+    });
+    return result;
+  };
+
+  // ---------------- Favorite ----------------
+  const handleFavorite = async (id, newValue, isFolder = true) => {
+    try {
+      let url = isFolder
+        ? newValue
+          ? `${API_BASE}/Favorite_Folder/${id}`
+          : `${API_BASE}/RemoveFavorite/${id}`
+        : newValue
+          ? `${API_BASE}/favoriteFile/${id}`
+          : `${API_BASE}/RemoveFavoriteFile/${id}`;
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!data.success) return;
+
+      if (isFolder)
+        setFolders((prev) =>
+          prev.map((f) => (f.id === id ? { ...f, favorite: newValue } : f))
+        );
+      else
+        setFiles((prev) =>
+          prev.map((f) => (f.id === id ? { ...f, favorite: newValue } : f))
+        );
+    } catch (err) {
+      console.error("Favorite API error:", err);
+    }
+  };
+
+  // ---------------- Fetch Files ----------------
+  const fetchFiles = async (userId, parentId) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/Mydrive/${userId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!data.success) return;
+
+      const drive = data.data.drive;
+
+      // 1. จัดการข้อมูล Folders (Flatten ให้เป็นชั้นเดียวเพื่อให้ค้นหาง่าย)
+      const allFoldersRaw = flattenFolders(drive.folders_active || []);
+      const allFolders = allFoldersRaw.map((f) => ({
+        ...f,
+        isFolder: true,
+        key: `folder-${f.id}`,
+        name: f.name,
+        favorite: f.is_starred === 1,
+      }));
+
+      // 2. จัดการข้อมูล Files (ดึงมาจากทุก Folder และ Root)
+      const collectFiles = (folders) => {
+        let result = [];
+        folders.forEach((folder) => {
+          if (folder.files_active?.length) {
+            result.push(
+              ...folder.files_active.map((f) => ({
+                ...f,
+                isFolder: false,
+                key: `file-${f.id}`,
+                file_name: f.file_name || f.name,
+                file_url: f.file_path
+                  ? `${API_BASE.replace("/api/v1", "")}/storage/${f.file_path.replace(/^\/+/, "")}`
+                  : f.url_file || f.file_url || null,
+                favorite: f.is_starred === 1,
+                file_type: f.file_type || f.mime_type,
+                file_size: f.file_size,
+                created_at: f.created_at,
+              }))
+            );
+          }
+          if (folder.children_recursive_active?.length)
+            result.push(...collectFiles(folder.children_recursive_active));
+        });
+        return result;
+      };
+
+      const filesFromFolders = collectFiles(drive.folders_active || []);
+      const filesRoot = (drive.files_active || []).map((f) => ({
+        ...f,
+        isFolder: false,
+        key: `file-${f.id}`,
+        file_name: f.file_name || f.name,
+        file_url: f.file_path
+          ? `${API_BASE.replace("/api/v1", "")}/storage/${f.file_path.replace(/^\/+/, "")}`
+          : f.url_file || f.file_url || null,
+        favorite: f.is_starred === 1,
+        file_type: f.file_type || f.mime_type,
+        file_size: f.file_size,
+        created_at: f.created_at,
+      }));
+
+      const allFiles = [...filesRoot, ...filesFromFolders];
+
+      // 3. กรองเฉพาะ Folder และ File ของตำแหน่งปัจจุบัน (parentId)
+      const currentFolders = allFolders.filter((f) =>
+        parentId ? f.parent_id === parentId : f.parent_id === null
+      );
+      const currentFiles = parentId
+        ? allFiles.filter((f) => f.folder_id === parentId)
+        : allFiles.filter((f) => !f.folder_id);
+
+      setFolders(currentFolders);
+      setFiles(currentFiles);
+
+      // 4. สร้าง Breadcrumb Path (ส่วนสำคัญที่ทำให้แสดง "Red Dead > lml")
+      const buildPath = (all, id) => {
+        if (!id) return [];
+        let p = [];
+        let current = all.find((x) => x.id === id);
+
+        while (current) {
+          p.unshift({ id: current.id, name: current.name });
+          // วนกลับไปหา parent_id ของโฟลเดอร์นี้ในลิสต์ทั้งหมด
+          current = all.find((x) => x.id === current.parent_id);
+        }
+        return p;
+      };
+
+      // อัปเดต Path State
+      const pathData = parentId ? buildPath(allFolders, parentId) : [];
+      setPath(pathData);
+
+    } catch (err) {
+      console.log("Fetch files error:", err);
+      showPopup("❌ โหลดข้อมูลไม่สำเร็จ", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const user = JSON.parse(localStorage.getItem("user"));
+    if (user?.id) fetchFiles(user.id, currentFolderId);
+  }, [currentFolderId]);
+
+  // ---------------- Navigation ----------------
+  const goToFolder = (id) =>
+    navigate(id ? `/mydrive/folder/${id}` : "/mydrive");
+
+  // ---------------- Create Folder ----------------
+  const handleCreateFolder = async (name) => {
+    const user = JSON.parse(localStorage.getItem("user"));
+
+    // แสดง popup กำลังสร้าง
+    setPopup({
+      show: true,
+      message: (
+        <div className="flex items-center justify-center gap-2">
+          <LoadingSpinner size="small" color="blue" />
+          <span>กำลังสร้างโฟลเดอร์ "{name}"...</span>
+        </div>
+      ),
+      type: "info",
+      onConfirm: null, // ไม่ต้อง confirm ตอนรัน
+      autoClose: false, // ให้ popup อยู่จนกว่าจะเปลี่ยน
+    });
+
+    try {
+      const res = await fetch(`${API_BASE}/AddFolder`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          drive_id: 1,
+          parent_id: currentFolderId,
+          name,
+        }),
+      });
+
+      const data = await res.json();
+
+      // ปิด popup กำลังทำงาน
+      setPopup((prev) => ({ ...prev, show: false }));
+
+      if (data.success) {
+        fetchFiles(user.id, currentFolderId);
+        showPopup(
+          <div className="flex items-center justify-center gap-2">
+            <FiFolderPlus className="text-blue-600 text-xl" />
+            <span>สร้างโฟลเดอร์ "{name}" สำเร็จ!</span>
+          </div>,
+          "success"
+        );
+      } else {
+        showPopup(
+          <div className="flex items-center justify-center gap-2">
+            <FiXCircle className="text-red-600 text-xl" />
+            <span>สร้างโฟลเดอร์ไม่สำเร็จ</span>
+          </div>,
+          "error"
+        );
+      }
+    } catch {
+      setPopup((prev) => ({ ...prev, show: false }));
+      showPopup(
+        <div className="flex items-center justify-center gap-2">
+          <FiXCircle className="text-red-600 text-xl" />
+          <span>เกิดข้อผิดพลาด</span>
+        </div>,
+        "error"
+      );
+    }
+  };
+
+  // ---------------- Upload ----------------
+  const handleUploadClick = () => {
+    const user = JSON.parse(localStorage.getItem("user"));
+    fetchFiles(user.id, currentFolderId);
+
+    showPopup(
+      <div className="flex items-center justify-center gap-2">
+        <FiUploadCloud className="text-blue-600 text-2xl flex-shrink-0" />
+        <span className="text-gray-900 font-medium">อัปโหลดไฟล์สำเร็จ!</span>
+      </div>,
+      "success"
+    );
+  };
+
+  // ---------------- Rename ----------------
+  const handleRename = (item) => setRenameModal({ isOpen: true, item });
+  const handleRenameSuccess = (id, newName, isFolder) => {
+    if (isFolder) {
+      setFolders((prev) =>
+        prev.map((f) => (f.id === id ? { ...f, name: newName } : f))
+      );
+    } else {
+      setFiles((prev) =>
+        prev.map((f) => (f.id === id ? { ...f, file_name: newName } : f))
+      );
+    }
+
+    showPopup(
+      <div className="flex items-center justify-center gap-2">
+        <FiCheckCircle className="text-green-600 text-xl" />
+        <span>เปลี่ยนชื่อสำเร็จ!</span>
+      </div>,
+      "success"
+    );
+  };
+
+  // ---------------- Delete ----------------
+  const handleDelete = async (item) => {
+    const user = JSON.parse(localStorage.getItem("user"));
+    try {
+      if (item.isFolder) {
+        await fetch(`${API_BASE}/folder/${item.id}`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+      } else {
+        await fetch(`${API_BASE}/files/${item.id}`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+      }
+      fetchFiles(user.id, currentFolderId);
+      showPopup("🗑 ย้ายไปถังขยะแล้ว", "success");
+    } catch {
+      showPopup("❌ เกิดข้อผิดพลาด", "error");
+    }
+  };
+
+  const confirmDeletePopup = (item) => {
+    const itemType = item.isFolder ? "โฟลเดอร์" : "ไฟล์";
+    const name = item.file_name ?? item.folder_name ?? item.name;
+    setPopup({
+      show: true,
+      type: "warning",
+      message: `คุณต้องการย้าย ${itemType} "${name}" ไปถังขยะใช่ไหม?`,
+      onConfirm: () => handleDelete(item),
+    });
+  };
+
+  const confirmDeleteSelectedPopup = () => {
+    if (!selectedItems.length) return;
+    const fileCount = selectedItems.filter((i) => !i.isFolder).length;
+    const folderCount = selectedItems.filter((i) => i.isFolder).length;
+    let message = "คุณต้องการย้าย ";
+    if (fileCount && folderCount)
+      message += `ไฟล์ ${fileCount} รายการ และโฟลเดอร์ ${folderCount} รายการ `;
+    else if (fileCount) message += `ไฟล์ ${fileCount} รายการ `;
+    else message += `โฟลเดอร์ ${folderCount} รายการ `;
+    message += "ไปถังขยะใช่ไหม?";
+    setPopup({
+      show: true,
+      type: "warning",
+      message,
+      onConfirm: handleDeleteSelected,
+    });
+  };
+
+  const handleDeleteSelected = async () => {
+    const file_ids = selectedItems.filter((i) => !i.isFolder).map((i) => i.id);
+    const folder_ids = selectedItems.filter((i) => i.isFolder).map((i) => i.id);
+    await fetch(`${API_BASE}/trash/bulk-move`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ file_ids, folder_ids }),
+    });
+    setSelectedItems([]);
+    const user = JSON.parse(localStorage.getItem("user"));
+    fetchFiles(user.id, currentFolderId);
+    showPopup("🗑 ย้ายไปถังขยะแล้ว!");
+  };
+
+  return (
+    <>
+      {/* ถ้าไม่ใช่หน้า share viewer ให้แสดง DriveLayout */}
+      {!isShareViewer ? (
+        <DriveLayout
+          currentFolderId={currentFolderId}
+          uploadButtonRef={uploadButtonRef}
+          onUploadClick={handleUploadClick}
+          onCreateFolder={handleCreateFolder}
+        >
+          {/* Breadcrumb */}
+          <PageHeader
+            title="My Drive"
+            subtitle="ไฟล์และโฟลเดอร์ทั้งหมดของคุณ"
+          />
+
+
+
+
+          {/* File List */}
+          <FileList
+            files={[...folders, ...files]}
+            goToFolder={goToFolder}
+            handlers={{
+              onPreview: handlePreview,
+              onDelete: confirmDeletePopup,
+              onRename: handleRename,
+              onDeleteSelected: confirmDeleteSelectedPopup,
+              onDownload: handleDownload,
+              onFavorite: handleFavorite,
+              handlePreview: handlePreview,
+              handleUploadFiles: (files) =>
+                uploadButtonRef.current?.handleUploadFiles(files),
+            }}
+            selectedItems={selectedItems}
+            setSelectedItems={setSelectedItems}
+            isLoading={loading}
+          />
+
+          {/* Modals */}
+          <PreviewModal
+            show={!!previewFile}
+            file={previewFile}
+            onClose={() => setPreviewFile(null)}
+          />
+          <RenameModal
+            isOpen={renameModal.isOpen}
+            onClose={() => setRenameModal({ isOpen: false, item: null })}
+            item={renameModal.item}
+            onRenameSuccess={handleRenameSuccess}
+          />
+          <Popup
+            show={popup.show}
+            message={popup.message}
+            type={popup.type}
+            onClose={() => setPopup({ ...popup, show: false })}
+            onConfirm={popup.onConfirm}
+            autoClose={!popup.onConfirm}
+          />
+        </DriveLayout>
+      ) : (
+        // ถ้าเป็นหน้า share viewer ให้แสดง UI เฉพาะของ ShareViewer
+        <div className="min-h-screen bg-gray-50">
+          {/* ใส่เฉพาะ content ที่จำเป็น โดยไม่ใช้ DriveLayout ซ้ำ */}
+          <nav className="flex gap-2 text-sm cursor-pointer mb-4">
+            <span
+              onClick={() => goToFolder(null)}
+              className="hover:text-blue-600"
+            >
+              My Drive
+            </span>
+            {path.map((p) => (
+              <span
+                key={p.id}
+                onClick={() => goToFolder(p.id)}
+                className="hover:text-blue-600"
+              >
+                › {p.name}
+              </span>
+            ))}
+          </nav>
+
+          <FileList
+            files={[...folders, ...files]}
+            path={path}
+            currentParent={currentParent}
+            goToFolder={goToFolder}
+            handlers={{
+              onPreview: handlePreview,
+              onDelete: confirmDeletePopup,
+              onRename: handleRename,
+              onDeleteSelected: confirmDeleteSelectedPopup,
+              onFavorite: handleFavorite,
+              handlePreview: handlePreview,
+              handleUploadFiles: (files) =>
+                uploadButtonRef.current?.handleUploadFiles(files),
+            }}
+            selectedItems={selectedItems}
+            setSelectedItems={setSelectedItems}
+            isLoading={loading}
+          />
+
+          <PreviewModal
+            show={!!previewFile}
+            file={previewFile}
+            onClose={() => setPreviewFile(null)}
+          />
+          <RenameModal
+            isOpen={renameModal.isOpen}
+            onClose={() => setRenameModal({ isOpen: false, item: null })}
+            item={renameModal.item}
+            onRenameSuccess={handleRenameSuccess}
+          />
+          <Popup
+            show={popup.show}
+            message={popup.message}
+            type={popup.type}
+            onClose={() => setPopup({ ...popup, show: false })}
+            onConfirm={popup.onConfirm}
+            autoClose={!popup.onConfirm}
+          />
+        </div>
+      )}
+    </>
+  );
+}

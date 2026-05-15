@@ -1,0 +1,2018 @@
+import React, { useState, useEffect, useRef } from "react";
+import {
+  FiX,
+  FiCopy,
+  FiCheck,
+  FiLink,
+  FiGlobe,
+  FiEye,
+  FiEdit,
+  FiDownload,
+  FiTrash2,
+  FiAlertCircle,
+  FiCheckCircle,
+  FiUserPlus,
+  FiUsers,
+  FiShare2,
+  FiChevronDown,
+  FiChevronUp,
+  FiSearch,
+  FiSettings,
+  FiInfo,
+} from "react-icons/fi";
+import { API_BASE, API_BASE_URL } from "../api/api.js";
+
+import { createPortal } from "react-dom";
+
+export default function ShareModal({ show, file, onClose, onShareUpdate }) {
+  if (!show || !file) return null;
+  
+  // โหมดการแชร์
+  const [shareMode, setShareMode] = useState("restricted");
+  const [recipients, setRecipients] = useState([]);
+  const [emailInput, setEmailInput] = useState("");
+  const [roleForNew, setRoleForNew] = useState("viewer");
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [shareLink, setShareLink] = useState("");
+  const [permission, setPermission] = useState(null);
+  const [existingPermissions, setExistingPermissions] = useState([]);
+  const [loadingPermissions, setLoadingPermissions] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [successMessage, setSuccessMessage] = useState(null);
+  const [errorMessage, setErrorMessage] = useState(null);
+  const [copiedLinks, setCopiedLinks] = useState({});
+
+  // สำหรับแก้ไขสิทธิ์
+  const [editingPermission, setEditingPermission] = useState(null);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editPermissions, setEditPermissions] = useState({
+    view: true,
+    edit: false,
+    download: false,
+  });
+
+  const token = localStorage.getItem("api_token");
+  const userEmail = localStorage.getItem("user_email");
+  const emailInputRef = useRef(null);
+  const modalRef = useRef(null);
+
+  // สำหรับ Private Link Mode
+  const [privateLinkRecipient, setPrivateLinkRecipient] = useState("");
+  const [privateLinkRole, setPrivateLinkRole] = useState("viewer");
+  const [privateLinkExpiration, setPrivateLinkExpiration] = useState("never");
+  const [privateLinkCustomExpiry, setPrivateLinkCustomExpiry] = useState("");
+  const [privateLinkCreated, setPrivateLinkCreated] = useState(false);
+  const [privateLinkNote, setPrivateLinkNote] = useState("");
+
+  // สำหรับ Anyone With Link (แบบไม่ต้องล็อกอิน)
+  const [linkExpiration, setLinkExpiration] = useState("never");
+  const [customExpiryDays, setCustomExpiryDays] = useState("");
+  const [accessType, setAccessType] = useState("viewer");
+  const [linkPassword, setLinkPassword] = useState("");
+  const [requirePassword, setRequirePassword] = useState(false);
+  const [showLinkDetails, setShowLinkDetails] = useState(false);
+
+  // สำหรับ Public Mode
+  const [allowView, setAllowView] = useState(true);
+  const [allowEdit, setAllowEdit] = useState(false);
+  const [allowDownload, setAllowDownload] = useState(true);
+  const [publicVisibility, setPublicVisibility] = useState("restricted");
+
+  // Settings
+  const [notifyPeople, setNotifyPeople] = useState(true);
+  const [allowEditorsToChangeAccess, setAllowEditorsToChangeAccess] =
+    useState(true);
+  const [viewersCanCopy, setViewersCanCopy] = useState(true);
+  const [addExpiration, setAddExpiration] = useState(false);
+  const [expirationDate, setExpirationDate] = useState("");
+  const [customMessage, setCustomMessage] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isMobile, setIsMobile] = useState(false);
+
+  const ROLES = [
+    {
+      key: "viewer",
+      label: "ผู้ดู",
+      icon: FiEye,
+      color: "text-gray-600",
+      bgColor: "bg-gray-50",
+      description: "ดูและดาวน์โหลดได้",
+      permissions: { view: true, edit: false, download: true },
+    },
+    {
+      key: "editor",
+      label: "ผู้แก้ไข",
+      icon: FiEdit,
+      color: "text-blue-600",
+      bgColor: "bg-blue-50",
+      description: "ดู, แก้ไข, ดาวน์โหลดและแชร์ต่อได้",
+      permissions: { view: true, edit: true, download: true },
+    },
+  ];
+
+  const SHARE_MODES = [
+    {
+      key: "restricted",
+      label: "จำกัด",
+      icon: FiUsers,
+      description: "เฉพาะบุคคลที่เลือก",
+      color: "text-gray-700",
+    },
+    {
+      key: "public",
+      label: "เปิดสาธารณะ",
+      icon: FiGlobe,
+      description: "ทุกคนเข้าถึงได้",
+      color: "text-blue-700",
+    },
+  ];
+
+  // ตรวจสอบขนาดหน้าจอ
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    
+    return () => {
+      window.removeEventListener('resize', checkMobile);
+    };
+  }, []);
+
+  // Initialize share link if file already has one
+  useEffect(() => {
+    if (show && file?.share_link) {
+      setShareLink(file.share_link);
+      setShareMode("anyoneWithLink");
+    }
+
+    if (show && file?.public_link) {
+      setShareLink(file.public_link);
+      setShareMode("public");
+    }
+  }, [show, file]);
+
+  // Load existing permissions when modal opens
+  useEffect(() => {
+    if (show && file?.id) {
+      fetchExistingPermissions();
+    }
+  }, [show, file?.id]);
+
+  // Reset state when modal closes
+  useEffect(() => {
+    if (show) {
+      setTimeout(() => emailInputRef.current?.focus(), 50);
+    } else {
+      resetModalState();
+    }
+  }, [show]);
+
+  // Close on ESC
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape" && show) onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [show, onClose]);
+
+  // ปิดเมื่อคลิกภายนอกบนมือถือ
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (isMobile && show && modalRef.current && !modalRef.current.contains(e.target)) {
+        onClose();
+      }
+    };
+    
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [isMobile, show, onClose]);
+
+  // Helper functions
+  const resetModalState = () => {
+    setRecipients([]);
+    setEmailInput("");
+    setRoleForNew("viewer");
+    setShareLink("");
+    setNotifyPeople(true);
+    setAllowEditorsToChangeAccess(true);
+    setViewersCanCopy(true);
+    setLinkExpiration("never");
+    setCustomExpiryDays("");
+    setAccessType("viewer");
+    setPermission(null);
+    setExistingPermissions([]);
+    setShowAdvanced(false);
+    setSuccessMessage(null);
+    setErrorMessage(null);
+    setShareMode("restricted");
+    setCopiedLinks({});
+    setSearchQuery("");
+
+    // Reset private link state
+    setPrivateLinkRecipient("");
+    setPrivateLinkRole("viewer");
+    setPrivateLinkExpiration("never");
+    setPrivateLinkCustomExpiry("");
+    setPrivateLinkCreated(false);
+    setPrivateLinkNote("");
+
+    // Reset public mode
+    setAllowView(true);
+    setAllowEdit(false);
+    setAllowDownload(true);
+    setPublicVisibility("restricted");
+
+    // Reset link settings
+    setLinkPassword("");
+    setRequirePassword(false);
+    setAddExpiration(false);
+    setExpirationDate("");
+    setCustomMessage("");
+    setShowLinkDetails(false);
+
+    // Reset edit modal
+    setEditingPermission(null);
+    setShowEditModal(false);
+    setEditPermissions({
+      view: true,
+      edit: false,
+      download: false,
+    });
+  };
+
+  const showSuccess = (message) => {
+    setSuccessMessage(message);
+    setTimeout(() => setSuccessMessage(null), 3000);
+  };
+
+  const showError = (message) => {
+    setErrorMessage(message);
+    setTimeout(() => setErrorMessage(null), 5000);
+  };
+
+  // ฟังก์ชันแปลง backend URL เป็น frontend URL
+  const getFrontendShareLink = (backendUrl, shareToken) => {
+    if (shareToken) {
+      return `${API_BASE_URL}/share/${shareToken}`;
+    }
+
+    if (backendUrl && backendUrl.includes("/api/v1/share/")) {
+      const token = backendUrl.split("/api/v1/share/")[1];
+      if (token) {
+        return `${API_BASE_URL}/share/${token}`;
+      }
+    }
+
+    return backendUrl;
+  };
+
+  const fetchExistingPermissions = async () => {
+    try {
+      setLoadingPermissions(true);
+      const target =
+        file?.isFolder || file?.is_folder || file?.type === "folder"
+          ? "folder"
+          : "file";
+
+      const res = await fetch(
+        `${API_BASE}/drive/${target}/${file.id}/permissions`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      );
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.data) {
+          const formattedPermissions = data.data.map((p) => {
+            // เช็คก่อนว่าเป็น Editor หรือไม่ (ดูจากทั้งโครงสร้าง permissions และ allow_edit)
+            const isEditor = p.permissions?.edit || p.allow_edit || false;
+
+            return {
+              id: p.id,
+              name: p.shared_to?.name || p.shared_to?.email || "Unknown",
+              email: p.shared_to?.email,
+              role: isEditor ? "editor" : "viewer",
+              type: p.shared_to?.type || p.shared_to_type || "email",
+              permissions: {
+                view: p.permissions?.view || p.allow_view || false,
+                edit: isEditor,
+                download: isEditor
+                  ? true
+                  : p.permissions?.download || p.allow_download || false,
+              },
+              link: p.link,
+              shared_link_token: p.shared_link_token,
+              expires_at: p.expires_at,
+              created_at: p.created_at,
+              allow_view: p.allow_view,
+              allow_edit: p.allow_edit,
+              allow_download: isEditor ? true : p.allow_download,
+            };
+          });
+
+          setExistingPermissions(formattedPermissions);
+
+          const publicPerm = data.data.find(
+            (p) => p.shared_to?.type === "link",
+          );
+          const privateLinkPerm = data.data.find(
+            (p) => p.scope === "private" && p.shared_link_token,
+          );
+
+          if (publicPerm) {
+            setPermission(publicPerm);
+            if (publicPerm.shared_link_token) {
+              const frontendLink = getFrontendShareLink(
+                null,
+                publicPerm.shared_link_token,
+              );
+              setShareLink(frontendLink);
+            } else if (publicPerm.link) {
+              const frontendLink = getFrontendShareLink(publicPerm.link, null);
+              setShareLink(frontendLink);
+            }
+            setShareMode("anyoneWithLink");
+          }
+
+          if (privateLinkPerm) {
+            if (privateLinkPerm.shared_link_token) {
+              const frontendLink = getFrontendShareLink(
+                null,
+                privateLinkPerm.shared_link_token,
+              );
+              setShareLink(frontendLink);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching permissions:", err);
+      showError("ไม่สามารถโหลดรายการสิทธิ์ที่มีอยู่");
+    } finally {
+      setLoadingPermissions(false);
+    }
+  };
+
+  const calculateExpirationDate = (expirationSetting, customDays) => {
+    if (expirationSetting === "never") return null;
+
+    const expiresAt = new Date();
+    let days = 7;
+
+    switch (expirationSetting) {
+      case "7days":
+        days = 7;
+        break;
+      case "30days":
+        days = 30;
+        break;
+      case "90days":
+        days = 90;
+        break;
+      case "custom":
+        days = parseInt(customDays) || 7;
+        break;
+    }
+
+    expiresAt.setDate(expiresAt.getDate() + days);
+    return expiresAt.toISOString().slice(0, 19).replace("T", " ");
+  };
+
+  const formatExpirationDate = (dateString) => {
+    if (!dateString) return "ไม่กำหนด";
+    const date = new Date(dateString);
+    return date.toLocaleDateString("th-TH", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+  };
+
+  const validateEmail = (email) => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
+
+  const handleAddRecipient = () => {
+    const email = (emailInput || "").trim().toLowerCase();
+    if (!email) {
+      showError("กรุณากรอกอีเมล");
+      return;
+    }
+
+    if (!validateEmail(email)) {
+      showError("โปรดระบุที่อยู่อีเมลที่ถูกต้อง");
+      return;
+    }
+
+    if (userEmail && email === userEmail.toLowerCase()) {
+      if (
+        !window.confirm("คุณกำลังแชร์ไฟล์ให้กับตัวเอง คุณต้องการเพิ่มหรือไม่?")
+      ) {
+        return;
+      }
+    }
+
+    if (recipients.some((r) => r.email.toLowerCase() === email)) {
+      showError("เพิ่มที่อยู่อีเมลนี้ไปแล้ว");
+      return;
+    }
+
+    const existing = existingPermissions.find(
+      (p) => p.email?.toLowerCase() === email,
+    );
+
+    if (existing) {
+      const msg = `"${email}" มีสิทธิ์ในการเข้าถึงอยู่แล้ว (บทบาท: ${existing.role})`;
+      if (!window.confirm(`${msg} คุณต้องการเพิ่มอีกครั้งหรือไม่?`)) {
+        return;
+      }
+    }
+
+    const avatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(
+      email.split("@")[0],
+    )}&background=random&color=fff`;
+
+    setRecipients([
+      ...recipients,
+      {
+        id: Date.now(),
+        email,
+        role: roleForNew,
+        avatar,
+        isNew: true,
+      },
+    ]);
+
+    setEmailInput("");
+    setTimeout(() => emailInputRef.current?.focus(), 50);
+  };
+
+  const handleRemoveRecipient = (id) => {
+    setRecipients(recipients.filter((r) => r.id !== id));
+  };
+
+  const handleChangeRole = (id, newRole) => {
+    setRecipients(
+      recipients.map((r) => (r.id === id ? { ...r, role: newRole } : r)),
+    );
+  };
+
+  const handleRemoveExistingPermission = async (permissionId) => {
+    if (!window.confirm("คุณต้องการลบสิทธิ์การเข้าถึงนี้หรือไม่?")) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/permissions/${permissionId}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        showSuccess("ลบสิทธิ์การเข้าถึงสำเร็จ");
+        setExistingPermissions(
+          existingPermissions.filter((p) => p.id !== permissionId),
+        );
+        if (onShareUpdate) onShareUpdate();
+      } else {
+        showError(data.message || "ลบไม่สำเร็จ");
+      }
+    } catch (err) {
+      console.error("Error removing permission:", err);
+      showError("เกิดข้อผิดพลาดในการลบ");
+    }
+  };
+
+  const handleUpdatePermission = async (permissionId, updatedPermissions) => {
+    try {
+      const payload = {
+        allow_view: updatedPermissions.view,
+        allow_edit: updatedPermissions.edit,
+        allow_download: updatedPermissions.download,
+      };
+
+      const res = await fetch(`${API_BASE}/permissions/${permissionId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await res.text();
+        throw new Error(`เซิร์ฟเวอร์ส่งข้อมูลที่ไม่ใช่ JSON: ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data.success) {
+        showSuccess("อัปเดตสิทธิ์เรียบร้อยแล้ว");
+
+        setExistingPermissions((prev) =>
+          prev.map((perm) => {
+            if (perm.id === permissionId) {
+              return {
+                ...perm,
+                role: updatedPermissions.edit
+                  ? "editor"
+                  : updatedPermissions.download
+                    ? "viewer"
+                    : "commenter",
+                permissions: updatedPermissions,
+                allow_view: data.data?.allow_view,
+                allow_edit: data.data?.allow_edit,
+                allow_download: data.data?.allow_download,
+              };
+            }
+            return perm;
+          }),
+        );
+
+        if (onShareUpdate) onShareUpdate();
+        return true;
+      } else {
+        showError(data.message || "อัปเดตสิทธิ์ไม่สำเร็จ");
+        return false;
+      }
+    } catch (err) {
+      console.error("Error updating permission:", err);
+      showError("เกิดข้อผิดพลาดในการอัปเดตสิทธิ์");
+      return false;
+    }
+  };
+
+  const openEditPermission = (permission) => {
+    const existingPerms = permission.permissions || permission;
+    const isEditor =
+      existingPerms.edit === true ||
+      existingPerms.allow_edit === true ||
+      permission.role === "editor";
+
+    setEditingPermission(permission);
+    setEditPermissions({
+      view: existingPerms.view ?? existingPerms.allow_view ?? true,
+      edit: isEditor,
+      download: isEditor
+        ? true
+        : (existingPerms.download ?? existingPerms.allow_download ?? true),
+    });
+
+    setShowEditModal(true);
+  };
+
+  const closeEditPermission = () => {
+    setEditingPermission(null);
+    setShowEditModal(false);
+    setEditPermissions({
+      view: true,
+      edit: false,
+      download: false,
+    });
+  };
+
+  const handleSavePermission = async () => {
+    if (!editingPermission) return;
+
+    if (!editPermissions.view) {
+      showError("ต้องเปิดสิทธิ์ 'ดูได้' อย่างน้อย");
+      return;
+    }
+
+    setLoading(true);
+    const success = await handleUpdatePermission(
+      editingPermission.id,
+      editPermissions,
+    );
+
+    if (success) {
+      closeEditPermission();
+    }
+
+    setLoading(false);
+  };
+
+  const copyToClipboard = async (customLink = null) => {
+    let linkToCopy = customLink || shareLink;
+
+    if (!linkToCopy) {
+      linkToCopy = `${window.location.origin}/share/${file.id}`;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(linkToCopy);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = linkToCopy;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+
+      setCopied(true);
+      showSuccess("คัดลอกลิงก์เรียบร้อยแล้ว");
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Copy failed:", err);
+      showError("ไม่สามารถคัดลอกลิงก์ได้");
+    }
+  };
+
+  const copySpecificLink = async (link, linkId = null) => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(link);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = link;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+
+      if (linkId) {
+        setCopiedLinks((prev) => ({ ...prev, [linkId]: true }));
+        setTimeout(() => {
+          setCopiedLinks((prev) => ({ ...prev, [linkId]: false }));
+        }, 2000);
+      } else {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+
+      showSuccess("คัดลอกลิงก์เรียบร้อยแล้ว");
+    } catch (err) {
+      console.error(err);
+      showError("ไม่สามารถคัดลอกลิงก์ได้");
+    }
+  };
+
+  const getExpirationText = () => {
+    switch (linkExpiration) {
+      case "never":
+        return "ไม่กำหนดวันหมดอายุ";
+      case "7days":
+        return "หมดอายุใน 7 วัน";
+      case "30days":
+        return "หมดอายุใน 30 วัน";
+      case "90days":
+        return "หมดอายุใน 90 วัน";
+      case "custom":
+        return `หมดอายุใน ${customExpiryDays} วัน`;
+      default:
+        return "ไม่กำหนดวันหมดอายุ";
+    }
+  };
+
+  const getPermissionDescription = (role) => {
+    switch (role) {
+      case "viewer":
+        return viewersCanCopy ? "ดูและดาวน์โหลดได้" : "ดูได้อย่างเดียว";
+      case "commenter":
+        return viewersCanCopy
+          ? "ดู, แสดงความคิดเห็น และดาวน์โหลดได้"
+          : "ดูและแสดงความคิดเห็นได้";
+      case "editor":
+        return "ดู, แก้ไข, ดาวน์โหลดและแชร์ต่อได้";
+      default:
+        return "";
+    }
+  };
+
+  const getAccessLevelDescription = () => {
+    switch (shareMode) {
+      case "restricted":
+        return "เฉพาะบุคคลที่คุณระบุเท่านั้นที่สามารถเข้าถึงได้";
+      case "privateLink":
+        return "บุคคลที่ได้รับลิงก์ต้องล็อกอินเพื่อเข้าถึง";
+      case "anyoneWithLink":
+        return "ทุกคนที่มีลิงก์สามารถเข้าถึงได้โดยไม่ต้องล็อกอิน";
+      case "public":
+        return "ไฟล์จะถูกเปิดเป็นสาธารณะ ทุกคนเข้าถึงได้";
+      default:
+        return "";
+    }
+  };
+
+  const booleanToNumber = (value) => (value ? 1 : 0);
+  const numberToBoolean = (value) => value === 1 || value === true;
+
+  const validateShare = () => {
+    setErrorMessage(null);
+
+    if (
+      shareMode === "restricted" &&
+      recipients.length === 0 &&
+      existingPermissions.length === 0
+    ) {
+      showError("โปรดเพิ่มบุคคลอย่างน้อยหนึ่งคน");
+      return false;
+    }
+
+    if (shareMode === "privateLink") {
+      if (!privateLinkRecipient.trim()) {
+        showError("กรุณากรอกอีเมลผู้รับสำหรับลิงก์ส่วนตัว");
+        return false;
+      }
+
+      if (!validateEmail(privateLinkRecipient.trim())) {
+        showError("โปรดระบุที่อยู่อีเมลที่ถูกต้อง");
+        return false;
+      }
+    }
+
+    if (shareMode === "anyoneWithLink" || shareMode === "public") {
+      if (linkExpiration === "custom") {
+        const days = parseInt(customExpiryDays);
+        if (!customExpiryDays || isNaN(days) || days < 1 || days > 365) {
+          showError("กรุณาระบุจำนวนวันที่ถูกต้อง (1-365 วัน)");
+          return false;
+        }
+      }
+
+      if (requirePassword && !linkPassword) {
+        showError("กรุณากรอกรหัสผ่านสำหรับลิงก์");
+        return false;
+      }
+    }
+
+    const emails = recipients.map((r) => r.email.toLowerCase());
+    const uniqueEmails = new Set(emails);
+    if (emails.length !== uniqueEmails.size) {
+      showError("มีอีเมลซ้ำในรายการผู้รับ กรุณาตรวจสอบ");
+      return false;
+    }
+
+    if (userEmail && emails.includes(userEmail.toLowerCase())) {
+      if (
+        !window.confirm(
+          "คุณกำลังแชร์ไฟล์ให้กับตัวเอง คุณต้องการดำเนินการต่อหรือไม่?",
+        )
+      ) {
+        return false;
+      }
+    }
+
+    if (shareMode === "public") {
+      if (!allowView) {
+        showError("ต้องอนุญาตให้ดูไฟล์อย่างน้อย");
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  const sendNotificationEmails = async (emails, role = "viewer") => {
+    if (!notifyPeople || emails.length === 0) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/notifications/share`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          file_id: file.id,
+          file_name: file.file_name,
+          recipients: emails,
+          role: role,
+          shared_by: userEmail || "Someone",
+          message: customMessage || undefined,
+          share_mode: shareMode,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        console.log("ส่งอีเมลแจ้งเตือนสำเร็จ");
+      }
+    } catch (err) {
+      console.error("Error sending notifications:", err);
+    }
+  };
+
+  const handleShare = async () => {
+    try {
+      if (!validateShare()) {
+        return;
+      }
+
+      setLoading(true);
+      const target =
+        file?.isFolder || file?.is_folder || file?.type === "folder"
+          ? "folder"
+          : "file";
+
+      let result;
+
+      switch (shareMode) {
+        case "restricted":
+          result = await handleRestrictedShare(target);
+          break;
+        case "privateLink":
+          result = await handlePrivateLinkShare(target);
+          break;
+        case "anyoneWithLink":
+          result = await handleAnyoneWithLinkShare(target);
+          break;
+        case "public":
+          result = await handlePublicShare(target);
+          break;
+      }
+
+      if (result && onShareUpdate) {
+        onShareUpdate();
+      }
+    } catch (err) {
+      console.error("Share error:", err);
+      showError("เกิดข้อผิดพลาดในการแชร์: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRestrictedShare = async (target) => {
+    const shareResults = [];
+    const successfulEmails = [];
+
+    for (const recipient of recipients) {
+      try {
+        const payload = {
+          email: recipient.email,
+          allow_view: true,
+          allow_edit: recipient.role === "editor",
+          allow_download: recipient.role === "editor" ? true : viewersCanCopy,
+        };
+
+        const res = await fetch(
+          `${API_BASE}/permissions/${target}/${file.id}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify(payload),
+          },
+        );
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          if (res.status === 422) {
+            showError(`ไม่พบผู้ใช้ ${recipient.email} ในระบบ`);
+            return;
+          }
+
+          shareResults.push({
+            email: recipient.email,
+            success: false,
+            message: data.message || "แชร์ไม่สำเร็จ",
+          });
+          continue;
+        }
+
+        shareResults.push({
+          email: recipient.email,
+          success: true,
+          message: data.message,
+          data: data.data,
+        });
+
+        successfulEmails.push(recipient.email);
+      } catch (err) {
+        console.error(`Error sharing to ${recipient.email}:`, err);
+        shareResults.push({
+          email: recipient.email,
+          success: false,
+          message: err.message,
+        });
+      }
+    }
+
+    if (successfulEmails.length > 0) {
+      showSuccess(`แชร์สำเร็จให้ ${successfulEmails.join(", ")}`);
+      fetchExistingPermissions();
+    }
+  };
+
+  const handlePrivateLinkShare = async (target) => {
+    const email = privateLinkRecipient.trim();
+
+    const payload = {
+      email: email,
+      allow_view: true,
+      allow_edit: privateLinkRole === "editor",
+      allow_download: true,
+      expires_at: calculateExpirationDate(
+        privateLinkExpiration,
+        privateLinkCustomExpiry,
+      ),
+    };
+
+    const res = await fetch(
+      `${API_BASE}/permissions/${target}/${file.id}/private-link`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+
+    const data = await res.json();
+
+    if (data.success) {
+      const shareToken = data.data?.permission?.shared_link_token;
+      const publicUrl = data.data?.public_url;
+
+      if (shareToken) {
+        const frontendUrl = `${API_BASE_URL}/share/${shareToken}`;
+        setShareLink(frontendUrl);
+        setPrivateLinkCreated(true);
+
+        const newPermission = {
+          id: data.data?.permission?.id || Date.now(),
+          name: email.split("@")[0],
+          email: email,
+          role: privateLinkRole,
+          type: "email",
+          permissions: {
+            view: true,
+            edit: privateLinkRole === "editor",
+            download: true,
+          },
+          shared_link_token: shareToken,
+          link: frontendUrl,
+          created_at: new Date().toISOString(),
+        };
+
+        setExistingPermissions((prev) => [...prev, newPermission]);
+        showSuccess("สร้างลิงก์ส่วนตัวสำเร็จ");
+        return true;
+      } else if (publicUrl) {
+        const frontendUrl = getFrontendShareLink(publicUrl, null);
+        setShareLink(frontendUrl);
+        setPrivateLinkCreated(true);
+        showSuccess("สร้างลิงก์ส่วนตัวสำเร็จ");
+        return true;
+      } else {
+        showError("สร้างลิงก์สำเร็จ แต่ไม่ได้รับลิงก์จากเซิร์ฟเวอร์");
+        return false;
+      }
+    } else {
+      showError(data.message || "สร้างลิงก์ส่วนตัวไม่สำเร็จ");
+      return false;
+    }
+  };
+
+  const handleAnyoneWithLinkShare = async (target) => {
+    const payload = {
+      allow_view: true,
+      allow_edit: accessType === "editor",
+      allow_download: true,
+    };
+
+    if (linkExpiration !== "never") {
+      const expiresAt = new Date();
+      let days = 7;
+      switch (linkExpiration) {
+        case "7days":
+          days = 7;
+          break;
+        case "30days":
+          days = 30;
+          break;
+        case "90days":
+          days = 90;
+          break;
+        case "custom":
+          days = parseInt(customExpiryDays) || 7;
+          break;
+      }
+      expiresAt.setDate(expiresAt.getDate() + days);
+      payload.expires_at = expiresAt
+        .toISOString()
+        .slice(0, 19)
+        .replace("T", " ");
+    }
+
+    if (requirePassword && linkPassword) {
+      payload.password = linkPassword;
+    }
+
+    const res = await fetch(
+      `${API_BASE}/permissions/${target}/${file.id}/public-link`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+
+    const data = await res.json();
+    if (data.success) {
+      const shareToken =
+        data.data?.shared_link_token ||
+        data.data?.permission?.shared_link_token;
+      if (shareToken) {
+        const link = `${API_BASE_URL}/share/${shareToken}`;
+        setShareLink(link);
+        showSuccess("สร้างลิงก์แชร์สาธารณะสำเร็จ");
+        return true;
+      } else {
+        showError("ไม่ได้รับลิงก์แชร์จากเซิร์ฟเวอร์");
+        return false;
+      }
+    } else {
+      showError(data.message || "สร้างลิงก์ไม่สำเร็จ");
+      return false;
+    }
+  };
+
+  const handlePublicShare = async (target) => {
+    const payload = {
+      allow_view: booleanToNumber(allowView),
+      allow_edit: booleanToNumber(allowEdit),
+      allow_download: booleanToNumber(allowDownload),
+    };
+
+    const res = await fetch(
+      `${API_BASE}/permissions/${target}/${file.id}/public`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+
+    const responseText = await res.text();
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error("Failed to parse JSON:", parseError);
+      showError("เซิร์ฟเวอร์ส่งข้อมูลกลับมาไม่ใช่รูปแบบ JSON");
+      return false;
+    }
+
+    if (data.success) {
+      const perm = data.data?.permission;
+      if (perm) {
+        const processedPermission = {
+          ...perm,
+          allow_view: numberToBoolean(perm.allow_view),
+          allow_edit: numberToBoolean(perm.allow_edit),
+          allow_download: numberToBoolean(perm.allow_download),
+        };
+        setPermission(processedPermission);
+      }
+
+      const shareToken = perm?.shared_link_token || data.data?.share_token;
+      if (shareToken) {
+        const frontendUrl = `${API_BASE_URL}/share/${shareToken}`;
+        setShareLink(frontendUrl);
+        showSuccess("เปิดแชร์สาธารณะแล้ว");
+        return true;
+      } else if (data.data?.public_url) {
+        const frontendUrl = getFrontendShareLink(data.data.public_url, null);
+        setShareLink(frontendUrl);
+        showSuccess("เปิดแชร์สาธารณะแล้ว");
+        return true;
+      } else {
+        showSuccess(
+          "ไม่ได้รับลิงก์แชร์จากเซิร์ฟเวอร์ แต่การตั้งค่าสิทธิ์สำเร็จแล้ว",
+        );
+        return true;
+      }
+    } else {
+      showError(data.message || "แชร์ไม่สำเร็จ");
+      return false;
+    }
+  };
+
+  const generateShareSummary = () => {
+    const totalPeople = recipients.length + existingPermissions.length;
+
+    switch (shareMode) {
+      case "restricted":
+        if (totalPeople === 0) return "ยังไม่ได้แชร์ให้ใคร";
+        if (totalPeople === 1) return "1 คนจะสามารถเข้าถึงได้";
+        return `${totalPeople} คนจะสามารถเข้าถึงได้`;
+
+      case "privateLink":
+        if (privateLinkCreated) {
+          return `✅ สร้างลิงก์ส่วนตัวให้ ${privateLinkRecipient} สำเร็จแล้ว`;
+        }
+        return `จะส่งลิงก์ส่วนตัวให้ ${privateLinkRecipient || "ผู้รับ"}`;
+
+      case "anyoneWithLink":
+        if (shareLink) {
+          return "✅ สร้างลิงก์สาธารณะสำเร็จแล้ว";
+        }
+        return "ทุกคนที่มีลิงก์จะสามารถเข้าถึงได้";
+
+      case "public":
+        if (shareLink) {
+          return "✅ เปิดแชร์สาธารณะสำเร็จแล้ว";
+        }
+        return "ไฟล์จะถูกเปิดเป็นสาธารณะ";
+
+      default:
+        return "";
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (shareMode === "restricted") {
+        handleAddRecipient();
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (show) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = prev;
+      };
+    }
+  }, [show]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 bg-black/50 flex items-start md:items-center justify-center z-50 p-2 md:p-4 overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div
+        ref={modalRef}
+        className="bg-white rounded-xl shadow-2xl w-full max-w-2xl mx-auto overflow-hidden flex flex-col my-4 md:my-0"
+        style={{
+          minWidth: "auto",
+          maxWidth: isMobile ? "100%" : "600px",
+          height: isMobile ? "auto" : "auto",
+          maxHeight: isMobile ? "90vh" : "80vh",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header - Google Drive Style */}
+        <div className="px-4 md:px-6 py-3 md:py-4 border-b border-gray-200 shrink-0 sticky top-0 bg-white z-10">
+          <div className="flex items-center justify-between">
+            <div className="flex-1 min-w-0">
+              <h2 className="text-base md:text-lg font-medium text-gray-900 flex items-center gap-2 truncate">
+                <FiShare2 size={isMobile ? 18 : 20} className="text-gray-600 flex-shrink-0" />
+                <span className="truncate">แชร์ "{file.name || file.file_name}"</span>
+              </h2>
+              <p className="text-xs text-gray-500 mt-0.5 truncate">
+                {file.isFolder ? "โฟลเดอร์" : "ไฟล์"}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                onClick={onClose}
+                className="p-1.5 md:p-2 hover:bg-gray-100 rounded-full transition-colors"
+                aria-label="ปิด"
+              >
+                <FiX size={isMobile ? 18 : 20} className="text-gray-500" />
+              </button>
+            </div>
+          </div>
+
+          {/* Link Display Section - Google Drive Style */}
+          {shareLink && (
+            <div className="mt-3 md:mt-4">
+              <div className="flex items-center gap-2 p-2 md:p-3 bg-gray-50 rounded-lg border border-gray-200">
+                <FiLink className="text-gray-400 flex-shrink-0" size={isMobile ? 14 : 16} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs md:text-sm text-gray-700 truncate">
+                    {shareLink}
+                  </div>
+                </div>
+                <button
+                  onClick={() => copyToClipboard(shareLink)}
+                  className="px-2 md:px-3 py-1 md:py-1.5 text-xs md:text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-md transition-colors flex items-center gap-1 md:gap-2 flex-shrink-0"
+                >
+                  {copied ? <FiCheck size={isMobile ? 12 : 14} /> : <FiCopy size={isMobile ? 12 : 14} />}
+                  <span className="hidden sm:inline">{copied ? "คัดลอกแล้ว" : "คัดลอก"}</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Main Content */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-6">
+          {/* Success/Error Messages */}
+          {successMessage && (
+            <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center gap-3">
+              <FiCheckCircle
+                className="text-green-600 flex-shrink-0"
+                size={isMobile ? 14 : 16}
+              />
+              <span className="text-xs md:text-sm text-green-700">{successMessage}</span>
+            </div>
+          )}
+
+          {errorMessage && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-3">
+              <FiAlertCircle className="text-red-600 flex-shrink-0" size={isMobile ? 14 : 16} />
+              <span className="text-xs md:text-sm text-red-700">{errorMessage}</span>
+            </div>
+          )}
+
+          {/* Share Mode Tabs - Google Drive Style */}
+          <div className="mb-4 md:mb-6 overflow-x-auto">
+            <div className="flex border-b border-gray-200 min-w-max md:min-w-0">
+              {SHARE_MODES.map((mode) => (
+                <button
+                  key={mode.key}
+                  onClick={() => setShareMode(mode.key)}
+                  className={`flex-1 px-3 md:px-4 py-2 md:py-3 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap
+          ${
+            shareMode === mode.key
+              ? "border-blue-500 text-blue-600"
+              : "border-transparent text-gray-500 hover:text-gray-700"
+          }`}
+                >
+                  <div className="flex items-center justify-center gap-2">
+                    <mode.icon size={isMobile ? 14 : 16} />
+                    <span>{mode.label}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Content Based on Share Mode */}
+          {shareMode === "restricted" && (
+            <div className="space-y-4 md:space-y-6">
+              {/* Search/Add People - Google Drive Style */}
+              <div className="space-y-3 md:space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    เพิ่มบุคคลและกลุ่ม
+                  </label>
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 p-2 md:p-3 border border-gray-300 rounded-lg bg-white">
+                    <div className="flex items-center gap-2 flex-1">
+                      <FiSearch className="text-gray-400 flex-shrink-0" size={isMobile ? 16 : 18} />
+                      <input
+                        ref={emailInputRef}
+                        type="email"
+                        value={emailInput}
+                        onChange={(e) => setEmailInput(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="กรอกอีเมล..."
+                        className="flex-1 text-sm outline-none placeholder-gray-400 min-w-0 w-full"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <select
+                        value={roleForNew}
+                        onChange={(e) => setRoleForNew(e.target.value)}
+                        className="text-sm border border-gray-300 rounded-md px-2 py-1.5 bg-white outline-none w-full sm:w-auto"
+                      >
+                        {ROLES.map((r) => (
+                          <option key={r.key} value={r.key}>
+                            {r.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={handleAddRecipient}
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium transition-colors flex items-center justify-center flex-shrink-0"
+                      >
+                        <FiUserPlus size={isMobile ? 14 : 16} />
+                        <span className="hidden sm:inline ml-1">เพิ่ม</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* New Recipients List */}
+                {recipients.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      กำลังเพิ่ม ({recipients.length})
+                    </div>
+                    {recipients.map((r) => {
+                      const RoleIcon =
+                        ROLES.find((x) => x.key === r.role)?.icon || FiEye;
+                      const roleColor =
+                        ROLES.find((x) => x.key === r.role)?.color ||
+                        "text-gray-600";
+
+                      return (
+                        <div
+                          key={r.id}
+                          className="flex items-center justify-between p-2 md:p-3 hover:bg-gray-50 rounded-lg"
+                        >
+                          <div className="flex items-center gap-2 md:gap-3 flex-1 min-w-0">
+                            <img
+                              src={r.avatar}
+                              alt=""
+                              className="w-7 h-7 md:w-8 md:h-8 rounded-full flex-shrink-0"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-medium text-gray-900 truncate">
+                                {r.email}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
+                            <select
+                              value={r.role}
+                              onChange={(e) =>
+                                handleChangeRole(r.id, e.target.value)
+                              }
+                              className="text-xs md:text-sm border border-gray-300 rounded-md px-1.5 md:px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 min-w-[80px] md:min-w-[100px]"
+                            >
+                              {ROLES.map((role) => (
+                                <option key={role.key} value={role.key}>
+                                  {role.label}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              onClick={() => handleRemoveRecipient(r.id)}
+                              className="p-1 text-gray-400 hover:text-red-500 transition-colors"
+                            >
+                              <FiX size={isMobile ? 14 : 16} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              
+              {/* Existing Permissions */}
+              {existingPermissions.length > 0 && (
+                <div className="space-y-3 md:space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      ผู้ที่มีสิทธิ์อยู่แล้ว ({existingPermissions.length})
+                    </div>
+                    <button
+                      onClick={fetchExistingPermissions}
+                      className="text-xs text-blue-600 hover:text-blue-700"
+                    >
+                      รีเฟรช
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {existingPermissions.map((perm) => {
+                      const hasShareLink =
+                        perm.shared_link_token || perm.link;
+                      const frontendLink = getFrontendShareLink(
+                        perm.link,
+                        perm.shared_link_token,
+                      );
+
+                      return (
+                        <div
+                          key={perm.id}
+                          className="flex items-center justify-between p-2 md:p-3 hover:bg-gray-50 rounded-lg group"
+                        >
+                          <div className="flex items-center gap-2 md:gap-3 flex-1 min-w-0">
+                            <img
+                              src={`https://ui-avatars.com/api/?name=${encodeURIComponent(
+                                perm.name,
+                              )}&background=random&color=fff`}
+                              alt=""
+                              className="w-7 h-7 md:w-8 md:h-8 rounded-full flex-shrink-0"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-medium text-gray-900 truncate">
+                                {perm.name}
+                              </div>
+                              <div className="text-xs text-gray-500 flex flex-wrap items-center gap-1 md:gap-2 mt-0.5">
+                                <span className="flex items-center gap-1">
+                                  <FiEye
+                                    size={10}
+                                    className="text-gray-600"
+                                  />
+                                  {perm.role === "editor"
+                                    ? "ผู้แก้ไข"
+                                    : "ผู้ดู"}
+                                </span>
+                                {perm.expires_at && (
+                                  <>
+                                    <span className="hidden md:inline">•</span>
+                                    <span className="text-gray-400">
+                                      หมดอายุ{" "}
+                                      {formatExpirationDate(
+                                        perm.expires_at,
+                                      )}
+                                    </span>
+                                  </>
+                                )}
+                                {hasShareLink && (
+                                  <>
+                                    <span className="hidden md:inline">•</span>
+                                    <span className="text-blue-400 flex items-center gap-1">
+                                      <FiLink size={10} />
+                                      <span>ลิงก์แชร์</span>
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1 md:gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity flex-shrink-0">
+                            {hasShareLink && (
+                              <button
+                                onClick={() =>
+                                  copySpecificLink(frontendLink, perm.id)
+                                }
+                                className="p-1 md:p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
+                                title="คัดลอกลิงก์เฉพาะบุคคล"
+                              >
+                                {copiedLinks[perm.id] ? (
+                                  <FiCheck
+                                    size={isMobile ? 12 : 14}
+                                    className="text-green-600"
+                                  />
+                                ) : (
+                                  <FiCopy size={isMobile ? 12 : 14} />
+                                )}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => openEditPermission(perm)}
+                              className="p-1 md:p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                            >
+                              <FiEdit size={isMobile ? 12 : 14} />
+                            </button>
+                            <button
+                              onClick={() =>
+                                handleRemoveExistingPermission(perm.id)
+                              }
+                              className="p-1 md:p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                            >
+                              <FiTrash2 size={isMobile ? 12 : 14} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              
+              {/* Advanced Options */}
+              <div className="pt-3 md:pt-4 border-t border-gray-200">
+                <button
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="flex items-center justify-between w-full text-sm text-gray-600 hover:text-gray-900 p-2 rounded-lg hover:bg-gray-50"
+                >
+                  <span>ตัวเลือกเพิ่มเติม</span>
+                  {showAdvanced ? (
+                    <FiChevronUp size={16} />
+                  ) : (
+                    <FiChevronDown size={16} />
+                  )}
+                </button>
+
+                {showAdvanced && (
+                  <div className="mt-3 space-y-3">
+                    <label className="flex items-start md:items-center gap-3 p-2 hover:bg-gray-50 rounded-lg cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={notifyPeople}
+                        onChange={(e) => setNotifyPeople(e.target.checked)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 mt-0.5 md:mt-0"
+                      />
+                      <div className="text-sm flex-1">
+                        <div className="font-medium text-gray-800">
+                          แจ้งเตือนผู้คน
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          ส่งอีเมลแจ้งเตือนถึงบุคคลที่เพิ่ม
+                        </div>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start md:items-center gap-3 p-2 hover:bg-gray-50 rounded-lg cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={viewersCanCopy}
+                        onChange={(e) => setViewersCanCopy(e.target.checked)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 mt-0.5 md:mt-0"
+                      />
+                      <div className="text-sm flex-1">
+                        <div className="font-medium text-gray-800">
+                          อนุญาตให้ผู้ดูดาวน์โหลดไฟล์
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Anyone With Link Mode - Google Drive Style */}
+          {shareMode === "anyoneWithLink" && (
+            <div className="space-y-4 md:space-y-6">
+              {/* Link Preview */}
+              {shareLink ? (
+                <div className="p-3 md:p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="px-2 py-0.5 text-xs bg-green-100 text-green-800 rounded-full">
+                      ใช้งานได้
+                    </span>
+                  </div>
+                  <div className="text-xs md:text-sm text-gray-600 truncate mb-3">
+                    {shareLink}
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <button
+                      onClick={() => copyToClipboard(shareLink)}
+                      className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md flex items-center justify-center gap-2 flex-1 sm:flex-none"
+                    >
+                      {copied ? <FiCheck size={14} /> : <FiCopy size={14} />}
+                      <span>{copied ? "คัดลอกแล้ว" : "คัดลอกลิงก์"}</span>
+                    </button>
+                    <button
+                      onClick={() => setShowLinkDetails(!showLinkDetails)}
+                      className="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 flex items-center justify-center gap-2 flex-1 sm:flex-none"
+                    >
+                      <FiSettings size={14} />
+                      <span>การตั้งค่า</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 md:p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <div className="flex items-start gap-3">
+                    <FiInfo className="text-blue-600 mt-0.5 flex-shrink-0" size={isMobile ? 16 : 18} />
+                    <div>
+                      <div className="text-sm font-medium text-blue-800">
+                        ลิงก์สาธารณะยังไม่ถูกสร้าง
+                      </div>
+                      <div className="text-xs text-blue-600 mt-1">
+                        กดปุ่ม "สร้างลิงก์" ด้านล่างเพื่อสร้างลิงก์แชร์
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Settings Section */}
+              {(showLinkDetails || !shareLink) && (
+                <div className="space-y-4 pt-3 md:pt-4 border-t border-gray-200">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      สิทธิ์การเข้าถึง
+                    </label>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {ROLES.map((role) => (
+                        <button
+                          key={role.key}
+                          onClick={() => setAccessType(role.key)}
+                          className={`p-2 md:p-3 rounded-lg border text-center ${
+                            accessType === role.key
+                              ? "border-blue-500 bg-blue-50"
+                              : "border-gray-200 hover:border-gray-300"
+                          }`}
+                        >
+                          <div className="flex flex-col items-center gap-1">
+                            <role.icon
+                              size={isMobile ? 16 : 18}
+                              className={`${role.color} mb-1`}
+                            />
+                            <span className="text-xs font-medium">
+                              {role.label}
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      การหมดอายุ
+                    </label>
+                    <select
+                      value={linkExpiration}
+                      onChange={(e) => setLinkExpiration(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                      <option value="never">ไม่กำหนดวันหมดอายุ</option>
+                      <option value="7days">7 วัน</option>
+                      <option value="30days">30 วัน</option>
+                      <option value="90days">90 วัน</option>
+                      <option value="custom">กำหนดเอง</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={requirePassword}
+                        onChange={(e) => setRequirePassword(e.target.checked)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span>กำหนดรหัสผ่าน</span>
+                    </label>
+                    {requirePassword && (
+                      <div className="mt-2">
+                        <input
+                          type="password"
+                          value={linkPassword}
+                          onChange={(e) => setLinkPassword(e.target.value)}
+                          placeholder="กรอกรหัสผ่าน"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Public Mode - Google Drive Style */}
+          {shareMode === "public" && (
+            <div className="space-y-4 md:space-y-6">
+              {/* Warning Alert */}
+              <div className="p-3 md:p-4 bg-blue-50 rounded-lg border border-blue-200">
+                <div className="flex items-start gap-3">
+                  <FiAlertCircle className="text-blue-600 mt-0.5 flex-shrink-0" size={isMobile ? 16 : 18} />
+                  <div>
+                    <div className="text-sm font-medium text-blue-800">
+                      การแชร์สาธารณะ
+                    </div>
+                    <div className="text-xs text-blue-600 mt-1">
+                      ไฟล์จะสามารถเข้าถึงได้โดยทุกคนบนอินเทอร์เน็ต
+                      ควรใช้สำหรับไฟล์ที่ไม่มีความลับเท่านั้น
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Link Preview */}
+              {shareLink && (
+                <div className="p-3 md:p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full">
+                      สาธารณะ
+                    </span>
+                  </div>
+                  <div className="text-xs md:text-sm text-gray-600 truncate mb-3">
+                    {shareLink}
+                  </div>
+                  <button
+                    onClick={() => copyToClipboard(shareLink)}
+                    className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md flex items-center justify-center gap-2 w-full"
+                  >
+                    {copied ? <FiCheck size={14} /> : <FiCopy size={14} />}
+                    <span>{copied ? "คัดลอกแล้ว" : "คัดลอกลิงก์"}</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Permission Settings */}
+              <div className="space-y-4">
+                <div className="text-sm font-medium text-gray-700">
+                  สิทธิ์การเข้าถึง
+                </div>
+
+                <div className="space-y-2">
+                  {/* View - Always enabled */}
+                  <div className="flex items-center justify-between p-2 md:p-3 bg-gray-50 rounded-lg">
+                    <div className="flex items-center gap-2 md:gap-3">
+                      <FiEye className="text-gray-600 flex-shrink-0" size={isMobile ? 16 : 18} />
+                      <div>
+                        <div className="text-sm font-medium text-gray-900">
+                          ดูได้
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          อนุญาตให้ดูเนื้อหาไฟล์
+                        </div>
+                      </div>
+                    </div>
+                    <div className="px-2 py-0.5 text-xs bg-gray-200 text-gray-800 rounded flex-shrink-0">
+                      จำเป็น
+                    </div>
+                  </div>
+
+                  {/* Edit */}
+                  <label className="flex items-center justify-between p-2 md:p-3 hover:bg-gray-50 rounded-lg cursor-pointer">
+                    <div className="flex items-center gap-2 md:gap-3">
+                      <FiEdit className="text-gray-600 flex-shrink-0" size={isMobile ? 16 : 18} />
+                      <div>
+                        <div className="text-sm font-medium text-gray-900">
+                          แก้ไขได้
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          อนุญาตให้แก้ไขไฟล์
+                        </div>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={allowEdit}
+                      onChange={(e) => setAllowEdit(e.target.checked)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 flex-shrink-0"
+                    />
+                  </label>
+
+                  {/* Download */}
+                  <label className="flex items-center justify-between p-2 md:p-3 hover:bg-gray-50 rounded-lg cursor-pointer">
+                    <div className="flex items-center gap-2 md:gap-3">
+                      <FiDownload className="text-gray-600 flex-shrink-0" size={isMobile ? 16 : 18} />
+                      <div>
+                        <div className="text-sm font-medium text-gray-900">
+                          ดาวน์โหลดได้
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          อนุญาตให้ดาวน์โหลดไฟล์
+                        </div>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={allowDownload}
+                      onChange={(e) => setAllowDownload(e.target.checked)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 flex-shrink-0"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer - Google Drive Style */}
+        <div className="px-4 md:px-6 py-3 md:py-4 border-t border-gray-200 bg-gray-50 shrink-0 sticky bottom-0 z-10">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="text-xs md:text-sm text-gray-600 order-2 sm:order-1">
+              {generateShareSummary()}
+            </div>
+            <div className="flex gap-2 order-1 sm:order-2 w-full sm:w-auto">
+              <button
+                onClick={onClose}
+                className="px-3 md:px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg text-sm font-medium transition-colors flex-1 sm:flex-none"
+              >
+                {shareLink ? "เสร็จสิ้น" : "ยกเลิก"}
+              </button>
+              <button
+                onClick={handleShare}
+                disabled={
+                  loading ||
+                  (shareMode === "restricted" &&
+                    recipients.length === 0 &&
+                    existingPermissions.length === 0) ||
+                  (shareMode === "anyoneWithLink" && !shareLink && false)
+                }
+                className={`px-3 md:px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 flex-1 sm:flex-none ${
+                  shareMode === "public"
+                    ? "bg-blue-600 hover:bg-blue-700 text-white"
+                    : "bg-blue-600 hover:bg-blue-700 text-white"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {loading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <span className="hidden sm:inline">กำลังดำเนินการ...</span>
+                    <span className="sm:hidden">กำลังดำเนินการ</span>
+                  </>
+                ) : (
+                  <>
+                    <FiShare2 size={isMobile ? 14 : 16} />
+                    <span>
+                      {shareMode === "anyoneWithLink" && !shareLink
+                        ? "สร้างลิงก์"
+                        : shareMode === "restricted" && recipients.length > 0
+                          ? `แชร์ให้ ${recipients.length} คน`
+                          : "แชร์"}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Edit Permission Modal - Google Drive Style */}
+      {showEditModal && editingPermission && (
+        <div className="fixed inset-0 bg-black/50 flex items-start md:items-center justify-center z-[60] p-2 md:p-4 overflow-y-auto">
+          <div
+            className="bg-white rounded-lg shadow-xl w-full max-w-md mx-auto my-4 md:my-0"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 md:p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between mb-3 md:mb-4">
+                <h3 className="text-base md:text-lg font-medium text-gray-900 truncate">
+                  แก้ไขสิทธิ์การเข้าถึง
+                </h3>
+                <button
+                  onClick={closeEditPermission}
+                  className="p-1 hover:bg-gray-100 rounded-full flex-shrink-0"
+                >
+                  <FiX size={isMobile ? 18 : 20} className="text-gray-500" />
+                </button>
+              </div>
+              <div className="text-sm text-gray-600 truncate">
+                สำหรับ {editingPermission.name}
+              </div>
+            </div>
+
+            <div className="p-4 md:p-6 space-y-4">
+              <div className="space-y-3">
+                <label className="flex items-center justify-between p-2 md:p-3 hover:bg-gray-50 rounded-lg cursor-pointer">
+                  <div className="flex items-center gap-2 md:gap-3">
+                    <FiEye className="text-gray-600 flex-shrink-0" size={isMobile ? 16 : 18} />
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">
+                        ดูได้
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        อนุญาตให้ดูเนื้อหาไฟล์
+                      </div>
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={editPermissions.view}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setEditPermissions({
+                        view: checked,
+                        edit: checked ? editPermissions.edit : false,
+                        download: checked ? editPermissions.download : false,
+                      });
+                    }}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 flex-shrink-0"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between p-2 md:p-3 hover:bg-gray-50 rounded-lg cursor-pointer">
+                  <div className="flex items-center gap-2 md:gap-3">
+                    <FiEdit className="text-gray-600 flex-shrink-0" size={isMobile ? 16 : 18} />
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">
+                        แก้ไขได้
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        อนุญาตให้แก้ไขไฟล์
+                      </div>
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={editPermissions.edit}
+                    onChange={(e) =>
+                      setEditPermissions({
+                        ...editPermissions,
+                        edit: e.target.checked,
+                        view: true,
+                        download: e.target.checked
+                          ? true
+                          : editPermissions.download,
+                      })
+                    }
+                    disabled={!editPermissions.view}
+                    className={`rounded border-gray-300 text-blue-600 focus:ring-blue-500 flex-shrink-0 ${
+                      !editPermissions.view ? "opacity-50" : ""
+                    }`}
+                  />
+                </label>
+
+                <label className="flex items-center justify-between p-2 md:p-3 hover:bg-gray-50 rounded-lg cursor-pointer">
+                  <div className="flex items-center gap-2 md:gap-3">
+                    <FiDownload className="text-gray-600 flex-shrink-0" size={isMobile ? 16 : 18} />
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">
+                        ดาวน์โหลดได้
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        อนุญาตให้ดาวน์โหลดไฟล์
+                      </div>
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={editPermissions.download}
+                    onChange={(e) =>
+                      setEditPermissions({
+                        ...editPermissions,
+                        download: e.target.checked,
+                        view: true,
+                      })
+                    }
+                    disabled={!editPermissions.view || editPermissions.edit}
+                    className={`rounded border-gray-300 text-blue-600 focus:ring-blue-500 flex-shrink-0 ${
+                      !editPermissions.view || editPermissions.edit
+                        ? "opacity-50"
+                        : ""
+                    }`}
+                  />
+                </label>
+              </div>
+
+              <div className="p-3 md:p-4 bg-gray-50 rounded-lg">
+                <div className="text-sm font-medium text-gray-700 mb-2">
+                  สรุปสิทธิ์:
+                </div>
+                <div className="text-sm text-gray-600">
+                  {!editPermissions.view ? (
+                    <span className="text-red-600">
+                      ❌ ไม่มีสิทธิ์การเข้าถึง
+                    </span>
+                  ) : editPermissions.edit ? (
+                    <span className="text-blue-600">
+                      ✏️ ผู้แก้ไข (ดู+แก้ไข+ดาวน์โหลด)
+                    </span>
+                  ) : editPermissions.download ? (
+                    <span className="text-green-600">
+                      👁️ ผู้ดู (ดู+ดาวน์โหลด)
+                    </span>
+                  ) : (
+                    <span className="text-gray-600">
+                      👀 ผู้แสดงความคิดเห็น (ดูได้อย่างเดียว)
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 md:p-6 border-t border-gray-200">
+              <div className="flex justify-end gap-2 md:gap-3">
+                <button
+                  onClick={closeEditPermission}
+                  className="px-3 md:px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg text-sm flex-1 md:flex-none"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  onClick={handleSavePermission}
+                  disabled={loading}
+                  className="px-3 md:px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm flex items-center justify-center gap-2 flex-1 md:flex-none"
+                >
+                  {loading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span className="hidden sm:inline">กำลังบันทึก...</span>
+                      <span className="sm:hidden">บันทึก</span>
+                    </>
+                  ) : (
+                    <>
+                      <FiCheck size={isMobile ? 14 : 16} />
+                      <span>บันทึก</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>,
+    document.body,
+  );
+}

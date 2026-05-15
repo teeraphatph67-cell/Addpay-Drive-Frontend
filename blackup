@@ -1,0 +1,868 @@
+import React, { useEffect, useState, useRef, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
+import DriveLayout from "../components/DriveLayout";
+import LoadingSpinner from "../components/LoadingSpinner";
+import PreviewModal from "../components/PreviewModal";
+
+import {
+  FiFolder,
+  FiFile,
+  FiUser,
+  FiDownload,
+  FiEye,
+  FiGrid,
+  FiList,
+  FiFileText,
+  FiImage,
+  FiVideo,
+  FiMusic,
+  FiBox,
+} from "react-icons/fi";
+import { FaFolder } from "react-icons/fa"; // ใช้ไอคอน Folder แบบทึบเพื่อให้เหมือนรูป
+import { API_BASE, BASE_URL } from "../api/api";
+
+export default function HomeShared() {
+  const [items, setItems] = useState([]);
+  const [userMap, setUserMap] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [layout, setLayout] = useState("grid");
+  const [previewModal, setPreviewModal] = useState({ show: false, file: null });
+  const [selectedItems, setSelectedItems] = useState([]);
+  const clickTimerRef = useRef(null);
+  const token = localStorage.getItem("api_token");
+  const navigate = useNavigate();
+
+  // --- Logic เดิม: โหลดข้อมูล ---
+  useEffect(() => {
+    const loadData = async () => {
+      if (!token) {
+        setError("กรุณาเข้าสู่ระบบ");
+        navigate("/login");
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/shared-with-me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        const result = await res.json();
+
+        if (!result.success) {
+          setError("ไม่สามารถโหลดข้อมูลที่แชร์ได้");
+          return;
+        }
+
+        const latest = result.data.slice(0, 10);
+        const verifiedItems = await Promise.all(
+          latest.map(async (item) => {
+            const itemInfo = await getItemInfo(
+              item.owner_id,
+              item.target_id,
+              item.target_type
+            );
+
+            let ownerName = userMap[item.owner_id];
+            if (!ownerName) {
+              ownerName =
+                (await getUserInfo(item.owner_id)) || `User #${item.owner_id}`;
+              setUserMap((prev) => ({ ...prev, [item.owner_id]: ownerName }));
+            }
+
+            return {
+              ...item,
+
+              // ✅ ID หลักสำหรับ React
+              permission_id: item.id, // <<<<<< ตัวนี้สำคัญที่สุด
+
+              // ❌ อย่าใช้ owner+target เป็น key
+              uid: `perm-${item.id}`,
+
+              // (ถ้าจำเป็นต้องมี id เดิมไว้ที่อื่น)
+              logical_id: `${item.owner_id}-${item.target_id}-${item.target_type}`,
+
+              target_name:
+                itemInfo?.name ||
+                item.target_name ||
+                `${item.target_type} #${item.target_id}`,
+
+              file_size: itemInfo?.size,
+              mime_type: itemInfo?.mimeType,
+              file_ext: itemInfo?.ext,
+
+              exists: itemInfo?.exists !== false,
+              is_trashed: itemInfo?.is_trashed || false,
+
+              file_path: itemInfo?.file_path,
+              url_file: itemInfo?.url_file,
+
+              share_token: item.shared_link_token,
+              isFolder: item.target_type === "folder",
+
+              owner_name: ownerName,
+              embedType: calculateEmbedType(item, itemInfo),
+            };
+
+
+          })
+        );
+
+        setItems(verifiedItems);
+      } catch (err) {
+        console.error("❌ Load shared failed:", err);
+        setError("เกิดข้อผิดพลาดในการโหลดข้อมูล");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [token]);
+
+  const toggleSelectItem = (item) => {
+    setSelectedItems((prev) => {
+      const exists = prev.some(
+        (i) => i.permission_id === item.permission_id
+      );
+
+      if (exists) {
+        return prev.filter(
+          (i) => i.permission_id !== item.permission_id
+        );
+      }
+
+      return [
+        ...prev,
+        {
+          permission_id: item.permission_id,
+          type: item.isFolder ? "folder" : "file",
+        },
+      ];
+    });
+  };
+
+
+  const handleSharedDownload = async () => {
+    if (selectedItems.length === 0) {
+      alert("กรุณาเลือกไฟล์หรือโฟลเดอร์");
+      return;
+    }
+
+    try {
+      // ====== กรณีเดียว และเป็นไฟล์ ======
+      if (selectedItems.length === 1 && selectedItems[0].type === "file") {
+        const permId = selectedItems[0].permission_id;
+
+        const res = await fetch(`${BASE_URL}api/v1/shared/file/${permId}/download`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (!res.ok) throw new Error();
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "download";
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+
+      // ====== หลายอัน / มี folder → ZIP ======
+      const res = await fetch(`${BASE_URL}api/v1/shared/download-multiple`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ items: selectedItems }),
+      });
+
+      if (!res.ok) throw new Error();
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      const timestamp = Date.now();
+      const random = Math.floor(Math.random() * 1000);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `shared_download_${timestamp}_${random}.zip`;
+      a.click();
+
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert("ดาวน์โหลดไม่สำเร็จ");
+    }
+  };
+  
+
+  // --- Logic เดิม: Helper Functions ---
+  const calculateEmbedType = (item, itemInfo) => {
+    if (item.target_type === "folder") return "folder";
+    const mime = (itemInfo?.mimeType || "").toLowerCase();
+    const ext = (itemInfo?.ext || "").toLowerCase();
+
+    if (mime.startsWith("image/")) return "image";
+    if (mime.includes("pdf") || ext === "pdf") return "pdf";
+    if (mime.startsWith("video/")) return "video";
+    if (mime.startsWith("audio/")) return "audio";
+    if (mime.includes("word") || /\.(doc|docx)$/i.test(ext)) return "document";
+    if (mime.includes("excel") || /\.(xls|xlsx)$/i.test(ext))
+      return "spreadsheet";
+    if (mime.includes("powerpoint") || /\.(ppt|pptx)$/i.test(ext))
+      return "presentation";
+    if (mime.startsWith("text/")) return "text";
+    if (mime.includes("zip") || /\.(zip|rar|7z)$/i.test(ext)) return "archive";
+    return "unknown";
+  };
+
+  const getUserInfo = async (userId) => {
+    try {
+      const res = await fetch(`${API_BASE}/Mydrive/${userId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.success ? data.data?.name : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const getItemInfo = async (ownerId, targetId, targetType) => {
+    try {
+      const res = await fetch(`${API_BASE}/Mydrive/${ownerId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data.success || !data.data?.drive) return null;
+      const drive = data.data.drive;
+
+      const searchItem = (items) => {
+        for (const item of items) {
+          if (item.id === targetId) return item;
+          if (item.children_recursive_active?.length > 0) {
+            const found = searchItem(item.children_recursive_active);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      if (targetType === "file") {
+        const file =
+          drive.files_active?.find((f) => f.id === targetId) ||
+          searchItem(drive.folders_active || []);
+        if (file) {
+          return {
+            exists: true,
+            name: file.file_name,
+            size: file.size_mb ? file.size_mb * 1024 * 1024 : 0,
+            mimeType: file.mime_type,
+            ext: file.file_ext,
+            is_trashed: file.is_trashed === 1,
+            file_path: file.file_path,
+          };
+        }
+      } else if (targetType === "folder") {
+        const folder = searchItem(drive.folders_active || []);
+        if (folder) {
+          return {
+            exists: true,
+            name: folder.name,
+            is_trashed: folder.is_trashed === 1,
+            url_file: folder.url_file,
+          };
+        }
+      }
+      return { exists: false };
+    } catch (error) {
+      console.error("Get item info error:", error);
+      return null;
+    }
+  };
+
+  const isPreviewable = useCallback((item) => {
+    if (!item || item.isFolder || item.is_trashed) return false;
+
+    // ✅ ถ้า allow_view ไม่มีค่า ให้ถือว่า true
+    if (item.allow_view === false) return false;
+
+    // ✅ ไม่บังคับ exists เพราะบาง API ไม่ส่งมา
+    const hasUrl = Boolean(item.share_token || item.file_path || item.url_file);
+    if (!hasUrl) return false;
+
+    const nonPreviewable = ["archive", "unknown"];
+
+    const dangerousTypes = [
+      "application/octet-stream",
+      "application/x-msdownload",
+      "application/x-dosexec",
+      "application/x-executable",
+    ];
+
+    const mime = (item.mime_type || "").toLowerCase();
+    const ext = (item.file_ext || "").toLowerCase();
+
+    const isDangerous =
+      dangerousTypes.some((type) => mime.includes(type)) ||
+      [".exe", ".dll", ".bat", ".msi"].some((d) => ext.endsWith(d));
+
+    return !nonPreviewable.includes(item.embedType) && !isDangerous;
+  }, []);
+
+  const handleItemClick = useCallback(
+    (item, isDoubleClick = false) => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+      if (!item.allow_view) {
+        alert("คุณไม่มีสิทธิ์ดูไฟล์นี้");
+        return;
+      }
+      if (!item.exists) {
+        alert("ไฟล์หรือโฟลเดอร์นี้ถูกลบไปแล้ว");
+        return;
+      }
+      if (item.is_trashed) {
+        alert("ไฟล์หรือโฟลเดอร์นี้อยู่ในถังขยะ");
+        return;
+      }
+
+      if (isDoubleClick) {
+        if (item.isFolder) {
+          item.share_token && navigate(`/share/${item.share_token}`);
+        } else if (isPreviewable(item)) {
+          openPreview(item);
+        } else if (
+          item.embedType === "archive" ||
+          item.embedType === "unknown"
+        ) {
+          confirm(
+            `ไฟล์ประเภทนี้ต้องดาวน์โหลด\nต้องการดาวน์โหลด "${item.target_name}" หรือไม่?`
+          ) && handleDownload(item);
+        } else {
+          item.share_token && navigate(`/share/${item.share_token}`);
+        }
+      } else {
+        const timer = setTimeout(() => {
+          item.share_token && navigate(`/share/${item.share_token}`);
+        }, 300);
+        clickTimerRef.current = timer;
+      }
+    },
+    [navigate, isPreviewable]
+  );
+
+  const openPreview = async (item) => {
+    try {
+      const fileUrl = await fetchFileUrl(item);
+      if (!fileUrl) {
+        alert("ไม่สามารถดึงข้อมูลไฟล์ได้");
+        return;
+      }
+      setPreviewModal({
+        show: true,
+        file: {
+          id: item.target_id,
+          name: item.target_name,
+          file_url: fileUrl,
+          mime_type: item.mime_type,
+          file_ext: item.file_ext,
+          owner_name: item.owner_name,
+          share_token: item.share_token,
+          allow_view: item.allow_view,
+          allow_download: item.allow_download,
+        },
+      });
+    } catch (error) {
+      console.error("Error opening preview:", error);
+      alert("ไม่สามารถเปิดไฟล์ได้");
+    }
+  };
+
+  const fetchFileUrl = async (item) => {
+    try {
+      let finalUrl = null;
+
+      // ✅ 1. PDF → ใช้ file_path โดยตรง (ห้ามใช้ preview API)
+      if (item.embedType === "pdf" && item.file_path && BASE_URL) {
+        return `${BASE_URL}${item.file_path}`;
+      }
+
+      // ✅ 2. มี share_token
+      if (item.share_token) {
+        if (["video", "audio"].includes(item.embedType)) {
+          finalUrl = `${API_BASE}/share/${item.share_token}/stream`;
+        }
+        // ❌ เอา pdf ออกจาก preview
+        else if (["image", "text"].includes(item.embedType)) {
+          finalUrl = `${API_BASE}/share/${item.share_token}/preview`;
+        } else {
+          finalUrl = `${API_BASE}/share/${item.share_token}/download`;
+        }
+      }
+      // ✅ 3. fallback → file_path
+      else if (item.file_path && BASE_URL) {
+        finalUrl = `${BASE_URL}${item.file_path}`;
+      } else if (item.url_file) {
+        finalUrl = item.url_file;
+      }
+
+      if (!finalUrl) return null;
+
+      // ✅ 4. Office files ใช้ Office Viewer
+      if (
+        ["document", "spreadsheet", "presentation"].includes(item.embedType)
+      ) {
+        return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(
+          finalUrl
+        )}`;
+      }
+
+      return finalUrl;
+    } catch (error) {
+      console.error("Error fetching file URL:", error);
+      return null;
+    }
+  };
+
+  const handleDownload = async (item, e) => {
+    if (e) e.stopPropagation();
+
+    if (!item.allow_download) {
+      alert("คุณไม่มีสิทธิ์ดาวน์โหลด");
+      return;
+    }
+
+    if (!item.exists || item.is_trashed) {
+      alert("ไฟล์หรือโฟลเดอร์นี้ไม่สามารถดาวน์โหลดได้");
+      return;
+    }
+
+    try {
+      let endpoint = null;
+      let filename = item.target_name || "download";
+
+      // ===============================
+      // 📁 FOLDER → ZIP
+      // ===============================
+      if (item.isFolder) {
+        if (!item.share_token) {
+          alert("ไม่สามารถดาวน์โหลดโฟลเดอร์นี้ได้");
+          return;
+        }
+
+        endpoint = `${API_BASE}/share/${item.share_token}/download-folder`;
+        filename = `${item.target_name}.zip`;
+      }
+
+      // ===============================
+      // 📄 FILE
+      // ===============================
+      else {
+        endpoint = item.share_token
+          ? `${API_BASE}/share/${item.share_token}/download`
+          : item.file_path && BASE_URL
+            ? `${BASE_URL}${item.file_path}`
+            : item.url_file;
+      }
+
+      if (!endpoint) throw new Error("ไม่พบลิงก์ดาวน์โหลด");
+
+      const res = await fetch(endpoint, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!res.ok) {
+        throw new Error(`Download failed: ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      console.error("❌ Download error:", error);
+      alert("เกิดข้อผิดพลาดในการดาวน์โหลด");
+    }
+  };
+
+  const formatFileSize = (bytes) => {
+    // 1. ถ้าเป็น 0 ให้ตอบ 0 B ทันที
+    if (bytes === 0) return "0 B";
+
+    // 2. ถ้าไม่มีค่า หรือไม่ใช่ตัวเลข ให้คืนค่าว่าง
+    if (!bytes || isNaN(bytes)) return "";
+
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB", "TB"];
+
+    // 3. คำนวณหาหน่วยที่เหมาะสม
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+    // 4. คืนค่าทศนิยม 2 ตำแหน่ง + หน่วย
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  };
+
+  // --- UI Helpers: ไอคอนและการแสดงผล ---
+  const getFileIconVisual = (item) => {
+    const size = 32;
+    switch (item.embedType) {
+      case "folder":
+        return <FaFolder className="text-yellow-400" size={50} />;
+      case "image":
+        return <FiImage className="text-purple-500" size={size} />;
+      case "video":
+        return <FiVideo className="text-red-500" size={size} />;
+      case "audio":
+        return <FiMusic className="text-pink-500" size={size} />;
+      case "pdf":
+        return <FiFileText className="text-red-600" size={size} />;
+      case "document":
+        return <FiFileText className="text-blue-600" size={size} />;
+      case "spreadsheet":
+        return <FiList className="text-green-600" size={size} />;
+      case "presentation":
+        return <FiGrid className="text-orange-600" size={size} />;
+      case "archive":
+        return <FiBox className="text-gray-600" size={size} />;
+      default:
+        return <FiFile className="text-gray-400" size={size} />;
+    }
+  };
+
+  const getCardBgColor = (item) => {
+    // สีพื้นหลังส่วนหัวของ Card ตามประเภทไฟล์
+    switch (item.embedType) {
+      case "folder":
+        return "bg-white";
+      case "image":
+        return "bg-purple-50";
+      case "video":
+        return "bg-red-50";
+      case "pdf":
+        return "bg-orange-50";
+      case "document":
+        return "bg-blue-50";
+      case "spreadsheet":
+        return "bg-green-50";
+      default:
+        return "bg-gray-100";
+    }
+  };
+
+  // Cleanup
+  useEffect(() => {
+    return () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    };
+  }, []);
+
+  // --- Render ---
+  return (
+    <DriveLayout>
+      <div className="">
+        {/* Header Section */}
+        <div className="flex justify-between items-end mb-8">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-800 tracking-tight">
+              ไฟล์ที่แชร์กับฉัน
+            </h1>
+            <p className="text-gray-500 mt-1 text-sm font-light">
+              ไฟล์และโฟลเดอร์ที่คนอื่นแชร์ให้คุณเข้าถึง
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {selectedItems.length > 0 && (
+              <button
+                onClick={handleSharedDownload}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg shadow hover:bg-emerald-700 transition"
+              >
+                ดาวน์โหลด ({selectedItems.length})
+              </button>
+            )}
+
+            <div className="flex bg-gray-100 p-1 rounded-lg">
+              <button
+                onClick={() => setLayout("grid")}
+                className={`p-2 rounded-md transition-all ${layout === "grid"
+                  ? "bg-white shadow-sm text-gray-800"
+                  : "text-gray-400 hover:text-gray-600"
+                  }`}
+              >
+                <FiGrid size={18} />
+              </button>
+              <button
+                onClick={() => setLayout("list")}
+                className={`p-2 rounded-md transition-all ${layout === "list"
+                  ? "bg-white shadow-sm text-gray-800"
+                  : "text-gray-400 hover:text-gray-600"
+                  }`}
+              >
+                <FiList size={18} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Loading / Error / Empty States */}
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-32">
+            <LoadingSpinner size="large" />
+            <p className="text-sm text-gray-500 mt-4">กำลังโหลดไฟล์ที่แชร์กับคุณ</p>
+          </div>
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <div className="bg-red-50 p-4 rounded-full mb-4">
+              <FiUser className="text-red-500 text-3xl" />
+            </div>
+            <p className="text-lg font-semibold text-red-600">{error}</p>
+          </div>
+        ) : items.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-32 text-center opacity-60">
+            <div className="bg-gray-50 p-6 rounded-full mb-4">
+              <FiFolder className="text-gray-300 text-6xl" />
+            </div>
+            <p className="text-lg text-gray-500">ไม่มีไฟล์ที่แชร์กับคุณ</p>
+          </div>
+        ) : (
+          <>
+            {/* ================= Grid View ================= */}
+
+            {layout === "grid" && (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+                {items.map((item) => {
+                  const isAvailable =
+                    item.exists && !item.is_trashed && item.allow_view;
+
+                  const isSelected = selectedItems.some(
+                    (i) => i.permission_id === item.permission_id
+                  );
+
+                  /* ================= Folder ================= */
+                  if (item.isFolder) {
+                    return (
+                      <div
+                        key={`shared-folder-${item.permission_id}`}
+                        onClick={() => toggleSelectItem(item)} // ✅ select
+                        onDoubleClick={() => handleItemClick(item, true)}
+                        className={`group relative flex flex-col items-center justify-center p-6 rounded-2xl
+              transition-all duration-200 cursor-pointer border
+              ${!isAvailable ? "opacity-50 cursor-not-allowed" : "hover:bg-gray-50"}
+            `}
+                      >
+                        {/* ✅ selected overlay */}
+                        {isSelected && (
+                          <div className="absolute inset-0 bg-emerald-500/5 z-10 pointer-events-none rounded-2xl" />
+                        )}
+
+                        <FaFolder
+                          className="relative z-20 text-yellow-400 drop-shadow-sm group-hover:scale-105 transition-transform"
+                          size={64}
+                        />
+
+                        <span className="relative z-20 mt-3 text-sm font-medium text-gray-700 text-center truncate w-full px-2">
+                          {item.target_name}
+                        </span>
+
+                        <span className="relative z-20 text-xs text-gray-400 font-light mt-1">
+                          {item.owner_name}
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  /* ================= File ================= */
+                  return (
+                    <div
+                      key={`shared-file-${item.permission_id}`}
+                      onClick={() => toggleSelectItem(item)} // ✅ select
+                      onDoubleClick={() => handleItemClick(item, true)}
+                      className={`group relative bg-white rounded-2xl overflow-hidden border border-gray-100
+            hover:shadow-lg hover:border-gray-200 transition-all duration-300 cursor-pointer flex flex-col
+            ${!isAvailable ? "opacity-50 grayscale cursor-not-allowed" : ""}
+            `}
+                    >
+                      {/* ✅ selected overlay */}
+                      {isSelected && (
+                        <div className="absolute inset-0 bg-emerald-500/5 z-10 pointer-events-none rounded-2xl" />
+                      )}
+
+                      {/* Preview */}
+                      <div className="relative z-20 h-36 w-full overflow-hidden bg-gray-50 flex items-center justify-center">
+                        {item.embedType === "image" && item.file_path ? (
+                          <img
+                            src={`${BASE_URL}${item.file_path}`}
+                            alt={item.target_name}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : item.embedType === "video" && item.file_path ? (
+                          <video
+                            src={`${BASE_URL}${item.file_path}`}
+                            className="w-full h-full object-cover"
+                            muted
+                            preload="metadata"
+                            playsInline
+                          />
+                        ) : item.embedType === "pdf" && item.file_path ? (
+                          <iframe
+                            src={`${BASE_URL}${item.file_path}#page=1&view=FitH`}
+                            title={item.target_name}
+                            className="w-full h-full pointer-events-none"
+                          />
+                        ) : (
+                          getFileIconVisual(item)
+                        )}
+
+                        {isAvailable && (
+                          <div className="absolute inset-0 bg-black/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 backdrop-blur-[1px]">
+                            {isPreviewable(item) && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleItemClick(item, true);
+                                }}
+                                className="p-2 bg-white rounded-full text-gray-700 hover:text-emerald-600 shadow-sm"
+                              >
+                                <FiEye size={16} />
+                              </button>
+                            )}
+                            {item.allow_download && (
+                              <button
+                                onClick={(e) => handleDownload(item, e)}
+                                className="p-2 bg-white rounded-full text-gray-700 hover:text-blue-600 shadow-sm"
+                              >
+                                <FiDownload size={16} />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Info */}
+                      <div className="relative z-20 p-4 flex flex-col gap-1">
+                        <h4
+                          className="font-semibold text-gray-800 text-sm truncate"
+                          title={item.target_name}
+                        >
+                          {item.target_name}
+                        </h4>
+
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="w-5 h-5 rounded-full bg-emerald-100 flex items-center justify-center text-[10px] text-emerald-700 font-bold uppercase">
+                            {item.owner_name?.charAt(0) || "?"}
+                          </div>
+                          <span className="text-xs text-gray-500 truncate">
+                            {item.owner_name}
+                          </span>
+                        </div>
+
+                        <div className="flex justify-between items-center mt-2 pt-2 border-t border-gray-50">
+                          <span className="text-[10px] text-gray-400 bg-gray-50 px-2 py-0.5 rounded-md uppercase font-medium">
+                            {item.file_ext || item.embedType}
+                          </span>
+                          <span className="text-[10px] text-gray-400">
+                            {item.target_type === 'file'
+                              ? formatFileSize(item.file_size)
+                              : "-"
+                            }
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+
+
+            {/* ================= List View ================= */}
+            {layout === "list" && (
+              <div className="bg-white rounded-xl border border-gray-100 overflow-hidden shadow-sm">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50/50 text-xs font-semibold text-gray-500 uppercase">
+                      <th className="p-4">ชื่อ</th>
+                      <th className="p-4">เจ้าของ</th>
+                      <th className="p-4">ขนาด</th>
+                      <th className="p-4">วันที่</th>
+                      <th className="p-4 text-right">จัดการ</th>
+                    </tr>
+                  </thead>
+
+                  <tbody className="divide-y divide-gray-50">
+                    {items.map((item) => {
+                      const isSelected = selectedItems.some(
+                        (i) => i.permission_id === item.permission_id
+                      );
+
+                      return (
+                        <tr
+                          key={`shared-list-${item.permission_id}`}
+                          onClick={() => toggleSelectItem(item)} // ✅ select
+                          onDoubleClick={() => handleItemClick(item, true)}
+                          className={`cursor-pointer transition
+                hover:bg-gray-50
+                ${isSelected ? "bg-emerald-50" : ""}
+              `}
+                        >
+                          <td className="p-4 font-medium text-gray-700">
+                            {item.target_name}
+                          </td>
+
+                          <td className="p-4 text-gray-500">{item.owner_name}</td>
+
+                          <td className="p-4 text-gray-500">
+                            {item.isFolder ? "-" : formatFileSize(item.file_size)}
+                          </td>
+
+                          <td className="p-4 text-gray-500">
+                            {new Date(item.created_at).toLocaleDateString("th-TH")}
+                          </td>
+
+                          <td className="p-4 text-right">
+                            {item.allow_download && (
+                              <button
+                                onClick={(e) => handleDownload(item, e)}
+                                className="p-1.5 text-gray-500 hover:text-blue-600"
+                              >
+                                <FiDownload size={16} />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+          </>
+        )}
+
+        <PreviewModal
+          show={previewModal.show}
+          file={previewModal.file}
+          onClose={() => setPreviewModal({ show: false, file: null })}
+        />
+      </div>
+    </DriveLayout>
+  );
+} 

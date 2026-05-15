@@ -1,0 +1,9 @@
+npm run dev -- -- host
+ngrok http 5173    
+
+
+
+npx vite --host 0.0.0.0
+
+
+https://addpaycrypto.com/mydrive/service-ui/mydrive/login

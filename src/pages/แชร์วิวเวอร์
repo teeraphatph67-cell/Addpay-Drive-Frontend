@@ -1,0 +1,1753 @@
+import React, { useState, useEffect, useRef } from "react";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
+import ShareLayout from "../components/ShareLayout";
+import { TbFolderFilled } from "react-icons/tb";
+
+import {
+  FiFile,
+  FiFolder,
+  FiImage,
+  FiDownload,
+  FiCheck,
+  FiArrowLeft,
+  FiShare2,
+  FiInfo,
+  FiUser,
+  FiGlobe,
+  FiUnlock,
+  FiLock,
+  FiAlertCircle,
+  FiFileText,
+  FiVideo,
+  FiMusic,
+  FiArchive,
+  FiChevronRight,
+  FiExternalLink,
+  FiEye,
+  FiClock,
+  FiMail,
+  FiLogIn,
+  FiAlertTriangle,
+  FiCopy,
+  FiUpload,
+  FiPlus,
+  FiEdit,
+
+  FiTrash2,
+  FiX,
+  FiSave,
+} from "react-icons/fi";
+import { API_BASE, BASE_URL } from "../api/api.js";
+
+// Upload Progress Component
+const UploadProgress = ({ progress, onCancel }) => {
+  if (Object.keys(progress).length === 0) return null;
+
+  return (
+    <div className="fixed bottom-4 right-4 z-50 max-w-sm w-full">
+      {Object.entries(progress).map(([fileName, data]) => (
+        <div
+          key={fileName}
+          className="bg-white rounded-xl shadow-lg border border-gray-200 p-3 mb-2"
+        >
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-sm font-medium truncate max-w-[200px]">
+              {fileName}
+            </span>
+            <button
+              onClick={() => onCancel(fileName)}
+              className="text-gray-400 hover:text-red-500 text-xs"
+            >
+              ยกเลิก
+            </button>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2">
+            <div
+              className="bg-emerald-500 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${data.percent || 0}%` }}
+            />
+          </div>
+          <div className="text-xs text-gray-500 mt-1 text-right">
+            {data.percent || 0}%
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// Create Folder Modal Component
+const CreateFolderModal = ({ isOpen, onClose, onCreate, folderName, setFolderName, isFetchingShare }) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[99999]">
+      <div className="bg-white rounded-xl p-6 w-[360px] shadow-xl">
+        <h3 className="text-lg font-semibold mb-4">
+          สร้างโฟลเดอร์ใหม่
+        </h3>
+
+        <input
+          type="text"
+          value={folderName}
+          onChange={(e) => setFolderName(e.target.value)}
+          placeholder="ชื่อโฟลเดอร์"
+          className="w-full border rounded-lg px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          autoFocus
+          onKeyPress={(e) => {
+            if (e.key === 'Enter') {
+              onCreate();
+            }
+          }}
+        />
+
+        <div className="flex justify-end gap-2">
+          <button
+            className="px-4 py-2 rounded-lg text-gray-600 hover:bg-gray-100"
+            onClick={onClose}
+            disabled={isFetchingShare}
+          >
+            ยกเลิก
+          </button>
+
+          <button
+            className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={onCreate}
+            disabled={!folderName.trim() || isFetchingShare}
+          >
+            {isFetchingShare ? "กำลังสร้าง..." : "สร้าง"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default function ShareViewer() {
+  const { shareToken } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const [isFetchingShare, setIsFetchingShare] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [shareData, setShareData] = useState(null);
+  const [error, setError] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [currentFolder, setCurrentFolder] = useState(null);
+  const [breadcrumbs, setBreadcrumbs] = useState([]);
+  const [requiresLogin, setRequiresLogin] = useState(false);
+  const [folderLoading, setFolderLoading] = useState(false);
+
+  // State สำหรับการจัดการไฟล์และโฟลเดอร์
+  const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [folderName, setFolderName] = useState("");
+  const [uploadProgress, setUploadProgress] = useState({});
+  const [uploadError, setUploadError] = useState("");
+  const [dragActive, setDragActive] = useState(false);
+
+  // Refs
+  const xhrMapRef = useRef({});
+  const fileInputRef = useRef(null);
+
+  // ฟังก์ชันเช็คสถานะล็อกอิน
+  const isLoggedIn = () => {
+    const token = localStorage.getItem("api_token");
+    const user = localStorage.getItem("user");
+    return !!(token && user);
+  };
+
+  useEffect(() => {
+    if (shareToken) {
+      fetchSharedData();
+    }
+  }, [shareToken]);
+
+  useEffect(() => {
+    const fromLogin = location.state?.fromLogin;
+    const storedToken = localStorage.getItem('share_redirect_token');
+
+    if (fromLogin && storedToken === shareToken) {
+      console.log("Returned from login, refreshing data...");
+      localStorage.removeItem('share_redirect_token');
+      localStorage.removeItem('share_redirect_path');
+
+      // รีเฟรชข้อมูล
+      fetchSharedData();
+    }
+  }, [location, shareToken]);
+
+  const fetchSharedData = async () => {
+    try {
+      setIsFetchingShare(true);        // ✅ ใช้ตัวนี้แทน setLoading
+      setRequiresLogin(false);
+      setError(null);
+
+      const token = localStorage.getItem("api_token");
+      const userEmail = localStorage.getItem("user_email");
+
+      const headers = {
+        "Content-Type": "application/json",
+      };
+
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      const res = await fetch(`${API_BASE}/share/${shareToken}`, {
+        method: "GET",
+        headers,
+      });
+
+      const result = await res.json();
+
+      if (!result.success) {
+        if (
+          res.status === 401 ||
+          result.message?.toLowerCase().includes("login") ||
+          result.message?.toLowerCase().includes("authenticate") ||
+          result.message?.toLowerCase().includes("unauthorized")
+        ) {
+          if (!token) {
+            localStorage.setItem("share_redirect_token", shareToken);
+            localStorage.setItem("share_redirect_path", window.location.pathname);
+            setRequiresLogin(true);
+            setError("กรุณาล็อกอินเพื่อเข้าถึงไฟล์นี้");
+            return;
+          }
+          throw new Error("คุณไม่มีสิทธิ์เข้าถึงไฟล์นี้");
+        }
+
+        throw new Error(result.message || "ไม่สามารถโหลดข้อมูลได้");
+      }
+
+      // 🔐 permission
+      if (result.permission?.scope === "private") {
+        const sharedEmail = result.permission.shared_email;
+
+        if (!sharedEmail && !token) {
+          setRequiresLogin(true);
+          setError("ไฟล์นี้ต้องการการล็อกอิน");
+          return;
+        }
+
+        if (
+          sharedEmail &&
+          (!token || userEmail?.toLowerCase() !== sharedEmail.toLowerCase())
+        ) {
+          setError("คุณไม่ได้รับอนุญาตให้เข้าถึงไฟล์นี้");
+          return;
+        }
+      }
+
+      // 👤 owner
+      let ownerName =
+        result.data?.owner_name ||
+        result.data?.owner?.name ||
+        "Anonymous";
+
+      const shareInfo = {
+        type: result.type,
+        permission: result.permission,
+        owner_name: ownerName,
+        data: result.data,
+      };
+
+      setShareData(shareInfo);
+
+      if (result.type === "folder") {
+        const folderData = processFolderData(result.data);
+        setCurrentFolder(folderData);
+        setBreadcrumbs([
+          {
+            id: folderData.id,
+            name: folderData.name || "โฟลเดอร์",
+            data: folderData,
+          },
+        ]);
+      }
+
+    } catch (err) {
+      console.error(err);
+      setError(err.message || "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้");
+    } finally {
+      setIsFetchingShare(false);       // ✅ ไม่กระทบ upload
+    }
+  };
+
+
+  // ฟังก์ชันปรับโครงสร้างข้อมูลโฟลเดอร์ให้สอดคล้อง
+  const processFolderData = (folder) => {
+    if (!folder) return folder;
+
+    // สร้างสำเนาของข้อมูล
+    const processed = { ...folder };
+
+    // กรอง items ออกเป็นไฟล์และโฟลเดอร์
+    if (processed.items && Array.isArray(processed.items)) {
+      processed.files = processed.items
+        .filter(item => item.type === 'file')
+        .map(item => ({
+          ...item.data,
+
+          // ✅ สำคัญมาก
+          permission_id: item.permission_id,
+          permissions: item.permissions,
+
+          file_name: item.data.name,
+          file_path: `/storage/${item.data.id}`,
+          file_ext: item.data.name?.split('.').pop()?.toLowerCase(),
+        }));
+
+      processed.subfolders = processed.items
+        .filter(item => item.type === 'folder')
+        .map(item => ({
+          ...item.data,
+
+          // (เผื่ออนาคต)
+          permission_id: item.permission_id,
+          permissions: item.permissions,
+
+          folder_name: item.data.name,
+        }));
+    }
+
+    return processed;
+  };
+
+  // ฟังก์ชันอัพโหลดไฟล์
+  const handleUploadFiles = async (files) => {
+    if (!hasPermission("edit")) {
+      setUploadError("คุณไม่มีสิทธิ์อัพโหลดไฟล์");
+      return;
+    }
+
+    const token = localStorage.getItem("api_token");
+    if (!token) {
+      setUploadError("กรุณาล็อกอินก่อนอัพโหลดไฟล์");
+      return;
+    }
+
+    const currentFolderId = currentFolder?.id || shareData?.data?.id;
+    setUploading(true);
+
+    const CHUNK_SIZE = 1024 * 1024 * 2; // 2MB
+
+    for (const file of files) {
+      try {
+        // --------------------
+        // 1️⃣ START UPLOAD
+        // --------------------
+        const startFd = new FormData();
+        startFd.append("original_name", file.name);
+        startFd.append("total_size", file.size);
+        startFd.append("folder_id", currentFolderId || "");
+
+        const startRes = await fetch(`${API_BASE}/upload/start`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: startFd,
+        });
+
+        const startResult = await startRes.json();
+        if (!startResult.upload_id) {
+          throw new Error(startResult.message || "เริ่มอัพโหลดไม่สำเร็จ");
+        }
+
+        const uploadId = startResult.upload_id;
+        const fileKey = `${file.name}_${uploadId}`;
+
+        // init progress
+        setUploadProgress((p) => ({
+          ...p,
+          [fileKey]: { percent: 100, uploadId, done: true },
+        }));
+
+        // 🔥 ลบ progress ออกหลังเสร็จ
+        setTimeout(() => {
+          setUploadProgress((p) => {
+            const copy = { ...p };
+            delete copy[fileKey];
+            return copy;
+          });
+        }, 1500);
+
+
+        // --------------------
+        // 2️⃣ UPLOAD CHUNKS
+        // --------------------
+        let offset = 0;
+
+        while (offset < file.size) {
+          const chunk = file.slice(offset, offset + CHUNK_SIZE);
+          const currentOffset = offset;
+
+          offset = await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+
+            xhr.open("POST", `${API_BASE}/upload/chunk`);
+            xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+            // ✅ progress ของ chunk นี้
+            xhr.upload.onprogress = (e) => {
+              if (!e.lengthComputable) return;
+
+              const uploaded = currentOffset + e.loaded;
+              const percent = Math.min(
+                100,
+                Math.round((uploaded / file.size) * 100)
+              );
+
+              setUploadProgress((p) => ({
+                ...p,
+                [fileKey]: { percent, uploadId },
+              }));
+            };
+
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                const res = JSON.parse(xhr.responseText);
+
+                // ✅ backend เป็นคนกำหนด offset
+                resolve(res.uploaded_size);
+              } else {
+                reject(xhr.responseText);
+              }
+            };
+
+            xhr.onerror = () => reject("network error");
+
+            const fd = new FormData();
+            fd.append("upload_id", uploadId);
+            fd.append("chunk", chunk);
+            fd.append("offset", currentOffset);
+
+            xhr.send(fd);
+          });
+        }
+
+
+
+        // --------------------
+        // 3️⃣ FINISH
+        // --------------------
+        const finishFd = new FormData();
+        finishFd.append("upload_id", uploadId);
+
+        const finishRes = await fetch(`${API_BASE}/upload/finish`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: finishFd,
+        });
+
+        if (!finishRes.ok) {
+          const text = await finishRes.text();
+          throw new Error(text);
+        }
+
+        setUploadProgress((p) => ({
+          ...p,
+          [fileKey]: { percent: 100, uploadId },
+        }));
+
+      } catch (err) {
+        console.error(err);
+        setUploadError(err.message || "อัพโหลดไฟล์ล้มเหลว");
+      }
+    }
+
+    // 🔥 ทุกไฟล์เสร็จแล้ว ค่อย refresh ครั้งเดียว
+    setUploading(false);
+    setIsUploading(false);  // ✅ ตั้ง isUploading เป็น false ก่อน refetch
+    await fetchSharedData();  // ✅ รอ fetch เสร็จก่อนดำเนินการต่อ
+  };
+
+
+
+  // ฟังก์ชันยกเลิกอัพโหลด
+  const cancelUpload = async (fileName) => {
+    const data = uploadProgress[fileName];
+    if (!data?.uploadId) return;
+
+    // abort xhr
+    const xhr = xhrMapRef.current[fileName];
+    if (xhr) xhr.abort();
+
+    // แจ้ง backend
+    const fd = new FormData();
+    fd.append("upload_id", data.uploadId);
+
+    await fetch(`${API_BASE}/upload/cancel`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("api_token")}`,
+      },
+      body: fd,
+    });
+
+    setUploadProgress((p) => {
+      const copy = { ...p };
+      delete copy[fileName];
+      return copy;
+    });
+  };
+
+  useEffect(() => {
+    if (!requiresLogin) return;
+
+    const token = localStorage.getItem("api_token");
+    if (!token) return;
+
+    console.log("🔁 logged in, refetch share");
+    fetchSharedData();
+  }, [requiresLogin]);
+
+
+  // ฟังก์ชันสร้างโฟลเดอร์
+  const handleCreateFolder = async () => {
+    // 1. ตรวจสอบความพร้อมของข้อมูล
+    if (!folderName.trim()) {
+      setUploadError("กรุณากรอกชื่อโฟลเดอร์");
+      return;
+    }
+
+    const token = localStorage.getItem("api_token");
+    if (!token) {
+      setUploadError("กรุณาล็อกอินก่อนสร้างโฟลเดอร์");
+      return;
+    }
+
+    setCreatingFolder(true);
+    setUploadError("");
+
+    try {
+      // ดึง ID โฟลเดอร์ปัจจุบัน เพื่อใช้เป็น parent_id
+      const currentFolderId = currentFolder?.id || shareData?.data?.id;
+
+      // ดึง drive_id จาก shareData (ถ้าไม่มีให้ใช้ default เป็น 9 ตามที่คุณเทสผ่าน)
+      const driveId = shareData?.data?.drive_id || 9;
+
+      // 2. เรียก API ไปที่ /AddFolder (ไม่ใช่ /folders/create)
+      const response = await fetch(`${API_BASE}/AddFolder`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+          "Accept": "application/json" // แนะนำให้ใส่ไว้เพื่อให้ Server ตอบกลับเป็น JSON เสมอ
+        },
+        body: JSON.stringify({
+          name: folderName,
+          parent_id: currentFolderId || null,
+          drive_id: driveId
+        }),
+      });
+
+      // 3. ตรวจสอบ Status Code ก่อน parse JSON
+      if (response.status === 405) {
+        throw new Error("Method Not Allowed: โปรดตรวจสอบว่า API Base URL ถูกต้องหรือไม่");
+      }
+
+      const result = await response.json();
+
+      if (result.success) {
+        setFolderName(""); // ล้างค่าใน Input
+        setShowCreateFolderModal(false); // ปิด Modal
+
+        // แจ้งเตือนสำเร็จ (ถ้ามีฟังก์ชัน showPopup)
+        if (typeof showPopup === 'function') {
+          showPopup(`สร้างโฟลเดอร์ "${folderName}" สำเร็จ`);
+        }
+
+        // 4. รีเฟรชข้อมูลหน้าจอ
+        setIsFetchingShare(true);  // ✅ เพิ่ม loading state
+        await fetchSharedData();
+      } else {
+        setUploadError(result.message || "สร้างโฟลเดอร์ล้มเหลว");
+      }
+    } catch (err) {
+      console.error("Create Folder Error:", err);
+      setUploadError(err.message || "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้");
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
+  // ฟังก์ชันจัดการ Drag & Drop
+  const handleDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (["dragenter", "dragover"].includes(e.type)) {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+
+    if (e.dataTransfer.files.length > 0 && hasPermission('edit')) {
+      handleUploadFiles(e.dataTransfer.files);
+      e.dataTransfer.clearData();
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    if (e.target.files.length > 0 && hasPermission('edit')) {
+      handleUploadFiles(e.target.files);
+      e.target.value = null; // รีเซ็ต input
+    }
+  };
+
+  const handleLoginRedirect = () => {
+    localStorage.setItem('share_redirect_token', shareToken);
+    localStorage.setItem('share_redirect_path', window.location.pathname);
+    navigate('/login', {
+      state: {
+        fromShare: true,
+        shareToken: shareToken
+      }
+    });
+  };
+
+  const copyLink = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const getFileIcon = (item) => {
+    if (item.mime_type?.startsWith("image/"))
+      return <FiImage className="text-emerald-600" size={20} />;
+    if (item.mime_type?.startsWith("video/"))
+      return <FiVideo className="text-emerald-600" size={20} />;
+    if (item.mime_type?.startsWith("audio/"))
+      return <FiMusic className="text-emerald-600" size={20} />;
+    if (item.mime_type?.includes("pdf"))
+      return <FiFileText className="text-emerald-600" size={20} />;
+    if (["zip", "rar", "7z"].includes(item.file_ext?.toLowerCase()))
+      return <FiArchive className="text-emerald-600" size={20} />;
+    return <FiFile className="text-emerald-600" size={20} />;
+  };
+
+  const formatFileSize = (sizeMB) => {
+    if (!sizeMB && sizeMB !== 0) return "Unknown";
+    if (sizeMB < 1) return `${(sizeMB * 1024).toFixed(0)} KB`;
+    return `${sizeMB.toFixed(2)} MB`;
+  };
+
+  const hasPermission = (action, item = null) => {
+    const perm = item
+      ? getItemPermission(item)
+      : shareData?.permission;
+
+    if (!perm) return false;
+
+    switch (action) {
+      case "view":
+        return perm.allow_view === true || perm.allow_view === 1;
+      case "edit":
+        return perm.allow_edit === true || perm.allow_edit === 1;
+      case "download":
+        return perm.allow_download === true || perm.allow_download === 1;
+      default:
+        return false;
+    }
+  };
+
+  const isLinkExpired = () => {
+    if (!shareData?.permission?.expires_at) return false;
+    return new Date(shareData.permission.expires_at) < new Date();
+  };
+
+  const handleFileClick = (file) => {
+    if (shareData.permission?.scope === "private") {
+      if (!hasPermission('view')) {
+        alert("คุณไม่มีสิทธิ์เข้าถึงไฟล์นี้");
+        return;
+      }
+
+      if (isLinkExpired()) {
+        alert("ลิงก์นี้หมดอายุแล้ว");
+        return;
+      }
+    }
+
+    const fileUrl = `${BASE_URL}${file.file_path}`;
+
+    if (file.mime_type?.startsWith("image/")) {
+      window.open(fileUrl, '_blank');
+    } else if (file.mime_type?.includes("pdf") ||
+      file.mime_type?.startsWith("video/") ||
+      file.mime_type?.startsWith("audio/")) {
+      window.open(fileUrl, '_blank');
+    } else {
+      if (!hasPermission('download')) {
+        alert("คุณไม่มีสิทธิ์ดาวน์โหลดไฟล์นี้");
+        return;
+      }
+
+      const a = document.createElement('a');
+      a.href = fileUrl;
+      a.download = file.file_name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  };
+
+  const fetchFolderContent = async (folderId) => {
+    try {
+      setFolderLoading(true);
+
+      const token = localStorage.getItem("api_token");
+      const headers = {
+        "Content-Type": "application/json",
+      };
+
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      console.log(`Fetching folder ${folderId} content...`);
+
+      // ลองใช้ endpoint สำหรับดึงข้อมูลโฟลเดอร์ย่อย
+      const res = await fetch(`${API_BASE}/share/${shareToken}/folder/${folderId}`, {
+        method: "GET",
+        headers: headers,
+      });
+
+      if (res.ok) {
+        const result = await res.json();
+        console.log("Folder content API response:", result);
+
+        if (result.success) {
+          return processFolderData(result.data);
+        }
+      }
+
+      // ถ้าไม่มี endpoint พิเศษ หรือผิดพลาด ให้คืนค่าเดิม
+      return null;
+    } catch (err) {
+      console.error("Error fetching folder content:", err);
+      return null;
+    } finally {
+      setFolderLoading(false);
+    }
+  };
+
+  // ✅ รีเฟรชเฉพาะโฟลเดอร์ปัจจุบันโดยไม่ต้องกลับไปหน้าแรก
+  const refreshCurrentFolder = async () => {
+    if (!currentFolder?.id || !shareToken) return;
+
+    try {
+      const token = localStorage.getItem("api_token");
+      const headers = {
+        "Content-Type": "application/json",
+      };
+
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      const res = await fetch(`${API_BASE}/share/${shareToken}/folder/${currentFolder.id}`, {
+        method: "GET",
+        headers: headers,
+      });
+
+      if (res.ok) {
+        const result = await res.json();
+        if (result.success) {
+          const updatedFolder = processFolderData(result.data);
+          setCurrentFolder(updatedFolder);
+
+          // อัพเดต breadcrumb เฉพาะตำแหน่งปัจจุบัน
+          setBreadcrumbs(prev =>
+            prev.map((crumb, index) =>
+              index === prev.length - 1
+                ? { ...crumb, data: updatedFolder }
+                : crumb
+            )
+          );
+        }
+      }
+    } catch (err) {
+      console.error("Error refreshing current folder:", err);
+    }
+  };
+
+  const handleFolderClick = async (folder) => {
+    if (shareData.permission?.scope === "private") {
+      if (!hasPermission('view')) {
+        alert("คุณไม่มีสิทธิ์เข้าถึงโฟลเดอร์นี้");
+        return;
+      }
+
+      if (isLinkExpired()) {
+        alert("ลิงก์นี้หมดอายุแล้ว");
+        return;
+      }
+    }
+
+    try {
+      // ตรวจสอบว่ามีข้อมูล items อยู่แล้วหรือไม่
+      if (folder.items && Array.isArray(folder.items)) {
+        // มีข้อมูลอยู่แล้ว ไม่ต้องดึงใหม่
+        const processedFolder = processFolderData(folder);
+        const newBreadcrumbs = [...breadcrumbs, {
+          id: processedFolder.id,
+          name: processedFolder.name || processedFolder.folder_name,
+          data: processedFolder
+        }];
+        setBreadcrumbs(newBreadcrumbs);
+        setCurrentFolder(processedFolder);
+      } else {
+        // ยังไม่มีข้อมูล ลองดึงจาก API
+        const folderContent = await fetchFolderContent(folder.id);
+
+        if (folderContent) {
+          // ได้ข้อมูลใหม่จาก API
+          const newBreadcrumbs = [...breadcrumbs, {
+            id: folderContent.id,
+            name: folderContent.name || folderContent.folder_name,
+            data: folderContent
+          }];
+          setBreadcrumbs(newBreadcrumbs);
+          setCurrentFolder(folderContent);
+        } else {
+          // ไม่สามารถดึงข้อมูลได้ แต่ยังสามารถเข้าโฟลเดอร์ได้
+          const processedFolder = processFolderData(folder);
+          const newBreadcrumbs = [...breadcrumbs, {
+            id: processedFolder.id,
+            name: processedFolder.name || processedFolder.folder_name,
+            data: processedFolder
+          }];
+          setBreadcrumbs(newBreadcrumbs);
+          setCurrentFolder(processedFolder);
+
+          console.log("Using existing folder data, no additional content available");
+        }
+      }
+    } catch (err) {
+      console.error("Error handling folder click:", err);
+      alert("ไม่สามารถเข้าถึงโฟลเดอร์ได้: " + err.message);
+    }
+  };
+
+  const handleBreadcrumbClick = async (index) => {
+    if (index === breadcrumbs.length - 1) return; // คลิกที่ตำแหน่งปัจจุบัน
+
+    const breadcrumb = breadcrumbs[index];
+
+    // ถ้าเป็น root folder (index = 0)
+    if (index === 0) {
+      setBreadcrumbs([breadcrumb]);
+      setCurrentFolder(breadcrumb.data);
+      return;
+    }
+
+    // ลองดึงข้อมูลโฟลเดอร์ใหม่ถ้าจำเป็น
+    const newFolderData = await fetchFolderContent(breadcrumb.id);
+
+    if (newFolderData) {
+      const updatedBreadcrumb = {
+        ...breadcrumb,
+        data: newFolderData
+      };
+
+      const newBreadcrumbs = breadcrumbs.slice(0, index + 1).map((bc, i) =>
+        i === index ? updatedBreadcrumb : bc
+      );
+
+      setBreadcrumbs(newBreadcrumbs);
+      setCurrentFolder(newFolderData);
+    } else {
+      // ใช้ข้อมูลเดิม
+      const newBreadcrumbs = breadcrumbs.slice(0, index + 1);
+      setBreadcrumbs(newBreadcrumbs);
+      setCurrentFolder(breadcrumb.data);
+    }
+  };
+
+  const handleGoBack = () => {
+    if (breadcrumbs.length > 1) {
+      const newBreadcrumbs = breadcrumbs.slice(0, -1);
+      setBreadcrumbs(newBreadcrumbs);
+      setCurrentFolder(newBreadcrumbs[newBreadcrumbs.length - 1].data);
+    }
+  };
+
+  const getItemPermission = (item) => {
+    return item.permissions || shareData?.permission || null;
+  };
+
+  const handleDownload = async (item) => {
+    const pId = item.permission_id || item.id || shareData?.permission?.id;
+
+    if (!pId) {
+      alert("ไม่พบ ID สำหรับดาวน์โหลด");
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem("api_token");
+
+      const downloadUrl = `${API_BASE}/shared/file/${pId}/download`;
+      console.log("Downloading from:", downloadUrl);
+
+      const res = await fetch(downloadUrl, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Accept": "application/json",
+        },
+      });
+
+      if (res.status === 404) {
+        throw new Error("ไม่พบไฟล์ที่ต้องการดาวน์โหลด (404) กรุณาตรวจสอบ ID หรือเส้นทาง API กับ Backend");
+      }
+
+      if (!res.ok) throw new Error(`Download failed with status: ${res.status}`);
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = item.file_name || "downloaded_file";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+    } catch (err) {
+      console.error("Download Error:", err);
+      alert(err.message);
+    }
+  };
+
+  // Action Buttons Component
+  const ActionButtons = () => {
+    // แสดงปุ่มเฉพาะถ้าเป็นโฟลเดอร์และมีสิทธิ์ edit
+    if (!shareData || shareData.type !== 'folder' || !hasPermission('edit')) {
+      return null;
+    }
+
+    return (
+      <div className="mb-4">
+        <div className="flex items-center gap-2">
+          {/* Upload Button */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={uploading}
+          >
+            <FiUpload size={16} />
+            <span>{uploading ? "กำลังอัพโหลด..." : "อัพโหลดไฟล์"}</span>
+          </button>
+
+          {/* Create Folder Button */}
+          <button
+            onClick={() => setShowCreateFolderModal(true)}
+            className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={creatingFolder}
+          >
+            <FiPlus size={16} />
+            <span>{creatingFolder ? "กำลังสร้าง..." : "สร้างโฟลเดอร์"}</span>
+          </button>
+
+          {/* Hidden File Input */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            multiple
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+        </div>
+
+        {/* Drag & Drop Hint */}
+        <p className="text-xs text-gray-500 mt-2">
+          ลากไฟล์มาวางในพื้นที่นี้เพื่ออัพโหลดได้ทันที
+        </p>
+      </div>
+    );
+  };
+
+  const renderFilePreview = (file) => {
+    const isImage = file.mime_type?.startsWith("image/");
+    const isPdf = file.mime_type?.includes("pdf");
+    const isVideo = file.mime_type?.startsWith("video/");
+    const isAudio = file.mime_type?.startsWith("audio/");
+
+    return (
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+          <div className="flex items-center gap-3">
+            {getFileIcon(file)}
+            <span className="font-medium text-gray-700">
+              {file.file_name}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {hasPermission('view') && (
+              <button
+                onClick={() => handleFileClick(file)}
+                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-2 text-sm font-medium transition-all"
+              >
+                <FiEye size={14} /> ดูไฟล์
+              </button>
+            )}
+            <button
+              onClick={() => handleDownload(file)}
+              className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2 text-sm font-medium transition-all"
+            >
+              <FiDownload size={14} /> ดาวน์โหลด
+            </button>
+          </div>
+        </div>
+
+        <div className="aspect-video bg-gray-900 flex items-center justify-center relative">
+          {isImage ? (
+            <img
+              src={`${BASE_URL}${file.file_path}?t=${Date.now()}`}
+              alt="preview"
+              className="max-h-full max-w-full object-contain cursor-pointer"
+              onClick={() => hasPermission('view') && window.open(`${BASE_URL}${file.file_path}`, '_blank')}
+            />
+          ) : isPdf ? (
+            <div className="text-center text-gray-500 p-4">
+              <FiFileText size={64} className="mx-auto mb-4 opacity-20" />
+              <span>ไฟล์ PDF - ต้องใช้โปรแกรมอ่าน PDF</span>
+              {hasPermission('view') && (
+                <button
+                  onClick={() => window.open(`${BASE_URL}${file.file_path}`, '_blank')}
+                  className="mt-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                >
+                  เปิดในแท็บใหม่
+                </button>
+              )}
+            </div>
+          ) : isVideo ? (
+            <div className="w-full p-4">
+              {hasPermission('view') ? (
+                <video
+                  controls
+                  className="max-w-full max-h-96 mx-auto"
+                  src={`${BASE_URL}${file.file_path}`}
+                >
+                  เบราว์เซอร์ของคุณไม่รองรับการเล่นวิดีโอนี้
+                </video>
+              ) : (
+                <div className="text-center text-gray-500">
+                  <FiVideo size={64} className="mx-auto mb-4 opacity-20" />
+                  <span>คุณไม่มีสิทธิ์ดูวิดีโอนี้</span>
+                </div>
+              )}
+            </div>
+          ) : isAudio ? (
+            <div className="text-center text-gray-500 p-4">
+              <FiMusic size={64} className="mx-auto mb-4 opacity-20" />
+              {hasPermission('view') ? (
+                <audio
+                  controls
+                  className="mt-4"
+                  src={`${BASE_URL}${file.file_path}`}
+                >
+                  เบราว์เซอร์ของคุณไม่รองรับการเล่นเสียง
+                </audio>
+              ) : (
+                <span>คุณไม่มีสิทธิ์ฟังเสียงนี้</span>
+              )}
+            </div>
+          ) : (
+            <div className="text-center text-gray-500">
+              <FiFile size={64} className="mx-auto mb-4 opacity-20" />
+              <span>ไม่สามารถพรีวิวไฟล์ประเภทนี้ได้</span>
+              {hasPermission('view') && (
+                <button
+                  onClick={() => handleFileClick(file)}
+                  className="mt-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                >
+                  เปิดไฟล์
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-gray-100">
+          <h4 className="text-sm font-semibold text-gray-700 mb-3">รายละเอียดไฟล์</h4>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <p className="text-gray-400 text-xs mb-1">ขนาด</p>
+              <p className="text-gray-700 font-medium">{formatFileSize(file.size_mb)}</p>
+            </div>
+            <div>
+              <p className="text-gray-400 text-xs mb-1">ประเภท</p>
+              <p className="text-gray-700 font-medium">{file.file_ext?.toUpperCase() || "Unknown"}</p>
+            </div>
+            <div>
+              <p className="text-gray-400 text-xs mb-1">สร้างเมื่อ</p>
+              <p className="text-gray-700 font-medium">
+                {new Date(file.created_at).toLocaleDateString('th-TH')}
+              </p>
+            </div>
+            <div>
+              <p className="text-gray-400 text-xs mb-1">MIME Type</p>
+              <p className="text-gray-700 font-medium text-xs">{file.mime_type}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderFolderContent = (folder) => {
+    if (!folder) return null;
+
+    // ดึงข้อมูลไฟล์และโฟลเดอร์ย่อยจาก field ต่างๆ
+    const files = folder.files || [];
+    const subfolders = folder.subfolders || [];
+
+    return (
+      <div
+        className="space-y-6"
+        onDragEnter={hasPermission('edit') ? handleDrag : undefined}
+        onDragOver={hasPermission('edit') ? handleDrag : undefined}
+        onDragLeave={hasPermission('edit') ? handleDrag : undefined}
+        onDrop={hasPermission('edit') ? handleDrop : undefined}
+      >
+        <div className="flex items-center gap-2 text-sm text-gray-600 mb-4">
+          <button
+            onClick={handleGoBack}
+            className={`p-1 hover:bg-gray-100 rounded ${breadcrumbs.length <= 1 ? 'opacity-50 cursor-not-allowed' : ''}`}
+            disabled={breadcrumbs.length <= 1}
+          >
+            <FiArrowLeft size={16} />
+          </button>
+          {breadcrumbs.map((crumb, index) => (
+            <div key={crumb.id} className="flex items-center">
+              {index > 0 && <FiChevronRight size={14} className="mx-2" />}
+              <button
+                onClick={() => handleBreadcrumbClick(index)}
+                className={`px-2 py-1 rounded hover:bg-gray-100 ${index === breadcrumbs.length - 1 ? 'font-semibold text-gray-800' : ''
+                  }`}
+              >
+                {crumb.name}
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Action Buttons */}
+        <ActionButtons />
+
+        {/* Error Message */}
+        {uploadError && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+            <div className="flex items-center gap-2 text-red-700">
+              <FiAlertCircle size={16} />
+              <span className="text-sm">{uploadError}</span>
+              <button
+                onClick={() => setUploadError("")}
+                className="ml-auto text-red-500 hover:text-red-700"
+              >
+                <FiX size={16} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Drag & Drop Zone */}
+        {dragActive && hasPermission('edit') && (
+          <div className="fixed inset-0 bg-black/10 flex items-center justify-center z-40 pointer-events-none">
+            <div className="bg-white/90 backdrop-blur-sm rounded-2xl p-8 border-2 border-dashed border-emerald-500">
+              <div className="text-center">
+                <FiUpload size={48} className="mx-auto mb-4 text-sky-" />
+                <p className="text-lg font-medium text-emerald-700">วางไฟล์ที่นี่เพื่ออัพโหลด</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {folderLoading && (
+          <div className="text-center py-8">
+            <div className="w-12 h-12 border-4 border-sky-100 border-t-sky-500 rounded-full animate-spin mx-auto mb-4"></div>
+            <p className="text-emerald-700">กำลังโหลดข้อมูลโฟลเดอร์...</p>
+          </div>
+        )}
+
+        {!folderLoading && subfolders.length > 0 && (
+          <div>
+            <h4 className="text-sm font-semibold text-gray-700 mb-2">โฟลเดอร์ ({subfolders.length})</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {subfolders.map((subfolder) => (
+                <button
+                  key={subfolder.id}
+                  onClick={() => handleFolderClick(subfolder)}
+                  disabled={!hasPermission('view') || isLinkExpired()}
+                  className={`p-3 bg-white border rounded-lg flex items-center gap-3 text-left transition-all ${hasPermission('view') && !isLinkExpired()
+                    ? 'border-gray-200 hover:border-sky-300 hover:shadow-sm cursor-pointer group'
+                    : 'border-gray-100 opacity-50 cursor-not-allowed'
+                    }`}
+                >
+                  <TbFolderFilled className="text-yellow-400 flex-shrink-0" size={24} />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-800 truncate">
+                      {subfolder.name || subfolder.folder_name}
+                    </p>
+                    <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
+                      <span>
+                        {(subfolder.items?.length ||
+                          (subfolder.files?.length || 0) + (subfolder.subfolders?.length || 0))
+                        } รายการ
+                      </span>
+                    </div>
+                  </div>
+                  <FiChevronRight className="text-gray-400" size={16} />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!folderLoading && files.length > 0 && (
+          <div>
+            <h4 className="text-sm font-semibold text-gray-700 mb-2">ไฟล์ ({files.length})</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {files.map((file) => (
+                <div
+                  key={file.id}
+                  className={`p-3 bg-white border rounded-lg transition-all ${hasPermission('view') && !isLinkExpired()
+                    ? 'border-gray-200 hover:border-sky-300 hover:shadow-sm cursor-pointer group'
+                    : 'border-gray-100 opacity-50 cursor-not-allowed'
+                    }`}
+                  onClick={() => hasPermission('view') && !isLinkExpired() && handleFileClick(file)}
+                >
+                  <div className="flex items-start gap-3">
+                    <div
+                      className={`p-2 rounded-lg transition-colors ${hasPermission('view') && !isLinkExpired()
+                        ? 'bg-sky-50 group-hover:bg-sky-100'
+                        : 'bg-gray-50'
+                        }`}
+                    >
+                      {getFileIcon(file)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p
+                        className={`font-medium truncate ${hasPermission('view') && !isLinkExpired()
+                          ? 'text-gray-800 group-hover:text-sky-700'
+                          : 'text-gray-500'
+                          }`}
+                      >
+                        {file.file_name}
+                      </p>
+                      <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
+                        <span>{file.file_ext?.toUpperCase()}</span>
+                        <span>•</span>
+                        <span>{formatFileSize(file.size_mb)}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
+                    <span className="text-xs text-gray-500">
+                      {new Date(file.created_at).toLocaleDateString('th-TH')}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      {hasPermission('view') && !isLinkExpired() && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleFileClick(file);
+                          }}
+                          className="p-1.5 text-sky-600 hover:bg-sky-50 rounded"
+                          title="ดูไฟล์"
+                        >
+                          <FiEye size={14} />
+                        </button>
+                      )}
+                      {hasPermission('download', file) && !isLinkExpired() && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDownload(file);
+                          }}
+                          className="p-1.5 text-gray-600 hover:bg-gray-100 rounded"
+                          title="ดาวน์โหลด"
+                        >
+                          <FiDownload size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!folderLoading && files.length === 0 && subfolders.length === 0 && (
+          <div className="text-center py-12 text-gray-500">
+            <TbFolderFilled size={64} className="mx-auto mb-4 opacity-30" />
+            <p className="text-lg font-medium mb-2">โฟลเดอร์นี้ว่างเปล่า</p>
+            <p className="text-sm">ไม่มีไฟล์หรือโฟลเดอร์ย่อย</p>
+
+            {hasPermission('edit') && (
+              <div className="mt-4">
+                <p className="text-gray-400 mb-2">คุณสามารถ:</p>
+                <div className="flex justify-center gap-2">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                  >
+                    อัพโหลดไฟล์
+                  </button>
+                  <button
+                    onClick={() => setShowCreateFolderModal(true)}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  >
+                    สร้างโฟลเดอร์
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  if (isFetchingShare)
+    return (
+      <ShareLayout>
+        <div className="min-h-[60vh] flex items-center justify-center">
+          <div className="text-center">
+            <div className="w-16 h-16 border-4 border-emerald-100 border-t-emerald-500 rounded-full animate-spin mx-auto mb-4"></div>
+            <p className="text-emerald-700 font-medium">กำลังตรวจสอบสิทธิ์การเข้าถึง...</p>
+          </div>
+        </div>
+      </ShareLayout>
+    );
+
+  // ✅ ตรวจสอบ requiresLogin
+  if (requiresLogin) {
+    // ถ้าล็อกอินแล้ว ให้ลอง fetch ใหม่
+    const token = localStorage.getItem("api_token");
+    if (token) {
+      return (
+        <ShareLayout>
+          <div className="min-h-[60vh] flex items-center justify-center">
+            <div className="text-center">
+              <div className="w-16 h-16 border-4 border-emerald-100 border-t-emerald-500 rounded-full animate-spin mx-auto mb-4"></div>
+              <p className="text-emerald-700 font-medium">กำลังตรวจสอบสิทธิ์...</p>
+            </div>
+          </div>
+        </ShareLayout>
+      );
+    }
+
+    return (
+      <ShareLayout>
+        <div className="flex items-center justify-center py-12">
+          <div className="bg-white p-8 rounded-2xl shadow-lg border border-gray-200 text-center max-w-md w-full">
+            <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
+              <FiLock size={32} className="text-blue-600" />
+            </div>
+
+            <h2 className="text-2xl font-bold text-gray-800 mb-3">
+              ต้องการการยืนยันตัวตน
+            </h2>
+
+            <p className="text-gray-600 mb-2">
+              เนื้อหานี้ต้องการการยืนยันตัวตนก่อนเข้าถึง
+            </p>
+
+            {shareData?.permission?.shared_email && (
+              <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 mb-4">
+                <div className="flex items-center justify-center gap-2 text-blue-700">
+                  <FiMail size={16} />
+                  <span className="font-medium">สำหรับ: {shareData.permission.shared_email}</span>
+                </div>
+              </div>
+            )}
+
+            <p className="text-gray-500 mb-6 text-sm">
+              กรุณาล็อกอินด้วยบัญชีที่ถูกต้องเพื่อเข้าถึงเนื้อหา
+            </p>
+
+            <div className="space-y-3">
+              <button
+                onClick={handleLoginRedirect}
+                className="w-full py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium flex items-center justify-center gap-2 transition-colors"
+              >
+                <FiLogIn size={18} />
+                <span>ล็อกอินเพื่อเข้าถึง</span>
+              </button>
+
+              <button
+                onClick={() => navigate("/mydrive")}
+                className="w-full py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+              >
+                กลับหน้าหลัก
+              </button>
+            </div>
+
+            <div className="mt-6 pt-6 border-t border-gray-200">
+              <p className="text-xs text-gray-500">
+                หากคุณไม่สามารถเข้าถึงได้ โปรดติดต่อเจ้าของเนื้อหา
+              </p>
+            </div>
+          </div>
+        </div>
+      </ShareLayout>
+    );
+  }
+
+  if (error && !requiresLogin)
+    return (
+      <ShareLayout>
+        <div className="flex items-center justify-center py-12">
+          <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-200 text-center max-w-sm">
+            <FiAlertCircle size={48} className="text-red-400 mx-auto mb-4" />
+            <h2 className="text-xl font-bold text-gray-800 mb-2">
+              เกิดข้อผิดพลาด
+            </h2>
+            <p className="text-gray-500 mb-6">{error}</p>
+            <button
+              onClick={() => navigate("/mydrive")}
+              className="w-full py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+            >
+              กลับหน้าหลัก
+            </button>
+          </div>
+        </div>
+      </ShareLayout>
+    );
+
+  if (!shareData) return null;
+
+  return (
+    <>
+      <ShareLayout>
+        <div
+          className="space-y-6"
+          onDragEnter={hasPermission('edit') ? handleDrag : undefined}
+          onDragOver={hasPermission('edit') ? handleDrag : undefined}
+          onDragLeave={hasPermission('edit') ? handleDrag : undefined}
+          onDrop={hasPermission('edit') ? handleDrop : undefined}
+        >
+          {/* Share Info Header */}
+          <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                {shareData.type === 'folder' ? (
+                  <TbFolderFilled className="text-yellow-400" size={28} />
+                ) : (
+                  getFileIcon(shareData.data)
+                )}
+                <div>
+                  <h1 className="text-xl font-bold text-gray-800">
+                    {shareData.type === 'folder'
+                      ? `${currentFolder?.name || currentFolder?.folder_name || shareData.data.name || shareData.data.folder_name || "โฟลเดอร์"}`
+                      : shareData.data.file_name
+                    }
+                  </h1>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-xs px-2 py-1 bg-emerald-100 text-emerald-700 rounded-full">
+                      {shareData.type === 'folder' ? 'โฟลเดอร์' : 'ไฟล์'}
+                    </span>
+                    {shareData.permission?.scope === "private" && (
+                      <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full flex items-center gap-1">
+                        <FiLock size={10} /> ส่วนตัว
+                      </span>
+                    )}
+
+                    {/* Permission Badge */}
+                    {hasPermission('edit') && (
+                      <span className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full flex items-center gap-1">
+                        <FiEdit size={10} /> แก้ไขได้
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                {shareData.type === 'folder' && hasPermission('edit') && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-2 text-sm font-medium transition-all"
+                      disabled={uploading}
+                    >
+                      <FiUpload size={14} />
+                      <span>อัพโหลด</span>
+                    </button>
+                    <button
+                      onClick={() => setShowCreateFolderModal(true)}
+                      className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 text-sm font-medium transition-all"
+                      disabled={creatingFolder}
+                    >
+                      <FiPlus size={14} />
+                      <span>สร้างโฟลเดอร์</span>
+                    </button>
+                  </div>
+                )}
+
+                <button
+                  onClick={copyLink}
+                  className={`px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-all ${copied
+                    ? "bg-emerald-100 text-emerald-700"
+                    : "bg-white border border-gray-300 text-gray-700 hover:border-emerald-300"
+                    }`}
+                >
+                  {copied ? (
+                    <>
+                      <FiCheck size={16} /> คัดลอกแล้ว!
+                    </>
+                  ) : (
+                    <>
+                      <FiCopy size={16} /> คัดลอกลิงก์
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {shareData.permission?.scope === "private" && (
+              <div className={`mt-4 rounded-lg p-3 border ${isLinkExpired()
+                ? "bg-red-50 border-red-200"
+                : "bg-blue-50 border-blue-200"
+                }`}>
+                <div className="flex items-start gap-3">
+                  <div className={`p-2 rounded-lg ${isLinkExpired() ? "bg-red-100" : "bg-blue-100"
+                    }`}>
+                    {isLinkExpired() ? (
+                      <FiAlertTriangle className="text-red-600" size={20} />
+                    ) : (
+                      <FiLock className="text-blue-600" size={20} />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <h4 className={`font-medium mb-1 ${isLinkExpired() ? "text-red-800" : "text-blue-800"
+                      }`}>
+                      {isLinkExpired() ? "ลิงก์หมดอายุแล้ว" : "ลิงก์ส่วนตัว"}
+                    </h4>
+                    <p className={`text-sm mb-2 ${isLinkExpired() ? "text-red-700" : "text-blue-700"
+                      }`}>
+                      {isLinkExpired()
+                        ? "ลิงก์นี้หมดอายุแล้ว คุณไม่สามารถเข้าถึงไฟล์ได้"
+                        : shareData.permission.shared_email
+                          ? `ไฟล์นี้ถูกแชร์ให้คุณเป็นการส่วนตัว`
+                          : "ไฟล์นี้ถูกแชร์ให้คุณเป็นการส่วนตัว"
+                      }
+                    </p>
+                    {shareData.permission?.expires_at && (
+                      <div className={`text-xs px-2 py-1 rounded inline-flex items-center gap-1 ${isLinkExpired() ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
+                        }`}>
+                        <FiClock size={12} />
+                        <span>
+                          {isLinkExpired() ? "หมดอายุเมื่อ: " : "หมดอายุ: "}
+                          {new Date(shareData.permission.expires_at).toLocaleDateString('th-TH')}
+                          {new Date(shareData.permission.expires_at).toLocaleTimeString('th-TH', {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            <div className="lg:col-span-3">
+              {shareData.type === 'folder' ? (
+                <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
+                  {renderFolderContent(currentFolder)}
+                </div>
+              ) : (
+                renderFilePreview(shareData.data)
+              )}
+            </div>
+
+            <div className="lg:col-span-1 space-y-4">
+              <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
+                <h3 className="text-sm font-semibold text-emerald-900 uppercase tracking-wider mb-4">
+                  ข้อมูลการแชร์
+                </h3>
+                <div className="space-y-4">
+                  <div className="flex items-start gap-3 text-sm">
+                    <FiInfo className="mt-1 text-emerald-500" />
+                    <div>
+                      <p className="text-gray-400 text-xs">ประเภท</p>
+                      <p className="text-gray-700 font-medium">
+                        {shareData.type === 'folder' ? 'โฟลเดอร์' : 'ไฟล์'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 text-sm">
+                    <FiUser className="mt-1 text-emerald-500" />
+                    <div>
+                      <p className="text-gray-400 text-xs">เจ้าของ</p>
+                      <p className="text-gray-700 font-medium">
+                        {shareData.owner_name}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 text-sm">
+                    {shareData.permission?.scope === "public" ? (
+                      <FiGlobe className="mt-1 text-emerald-500" />
+                    ) : (
+                      <FiLock className="mt-1 text-blue-500" />
+                    )}
+                    <div>
+                      <p className="text-gray-400 text-xs">การเข้าถึง</p>
+                      <p className={`font-medium flex items-center gap-1 ${shareData.permission?.scope === "public"
+                        ? "text-emerald-600"
+                        : "text-blue-600"
+                        }`}>
+                        {shareData.permission?.scope === "public" ? (
+                          <>
+                            <FiUnlock size={12} /> สาธารณะ
+                          </>
+                        ) : (
+                          <>
+                            <FiLock size={12} /> ส่วนตัว
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  {shareData.permission?.scope === "private" && shareData.permission.shared_email && (
+                    <div className="flex items-start gap-3 text-sm">
+                      <FiMail className="mt-1 text-blue-500" />
+                      <div>
+                        <p className="text-gray-400 text-xs">แชร์ให้กับ</p>
+                        <p className="text-blue-700 font-medium">
+                          {shareData.permission.shared_email}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {shareData.permission?.expires_at && (
+                    <div className="flex items-start gap-3 text-sm">
+                      <FiClock className={`mt-1 ${isLinkExpired() ? "text-red-500" : "text-emerald-500"
+                        }`} />
+                      <div>
+                        <p className="text-gray-400 text-xs">หมดอายุ</p>
+                        <p className={`font-medium ${isLinkExpired() ? "text-red-600" : "text-emerald-700"
+                          }`}>
+                          {new Date(shareData.permission.expires_at).toLocaleDateString('th-TH')}
+                          <span className="block text-xs font-normal text-gray-500">
+                            {new Date(shareData.permission.expires_at).toLocaleTimeString('th-TH', {
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-3 border-t border-gray-100">
+                    <p className="text-xs text-gray-400 mb-2">สิทธิ์การเข้าถึง:</p>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-gray-600">ดูข้อมูล</span>
+                        <span className={`text-xs px-2 py-1 rounded ${hasPermission('view') && !isLinkExpired()
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'bg-gray-100 text-gray-500'
+                          }`}>
+                          {hasPermission('view') && !isLinkExpired() ? 'อนุญาต' : 'ไม่อนุญาต'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-gray-600">แก้ไข</span>
+                        <span className={`text-xs px-2 py-1 rounded ${hasPermission('edit') && !isLinkExpired()
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'bg-gray-100 text-gray-500'
+                          }`}>
+                          {hasPermission('edit') && !isLinkExpired() ? 'อนุญาต' : 'ไม่อนุญาต'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-gray-600">ดาวน์โหลด</span>
+                        <span className={`text-xs px-2 py-1 rounded ${hasPermission('download') && !isLinkExpired()
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'bg-gray-100 text-gray-500'
+                          }`}>
+                          {hasPermission('download') && !isLinkExpired() ? 'อนุญาต' : 'ไม่อนุญาต'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {shareData.type === 'folder' && currentFolder && (
+                <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
+                  <h3 className="text-sm font-semibold text-emerald-900 uppercase tracking-wider mb-4">
+                    สถิติโฟลเดอร์
+                  </h3>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">ไฟล์ทั้งหมด</span>
+                      <span className="font-medium text-emerald-700">
+                        {(currentFolder.files || []).length}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">โฟลเดอร์ย่อย</span>
+                      <span className="font-medium text-emerald-700">
+                        {(currentFolder.subfolders || []).length}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">สร้างเมื่อ</span>
+                      <span className="text-sm text-gray-500">
+                        {new Date(currentFolder.created_at).toLocaleDateString('th-TH')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </ShareLayout>
+
+      {/* Upload Progress */}
+      <UploadProgress
+        progress={uploadProgress}
+        onCancel={cancelUpload}
+      />
+
+      {/* Create Folder Modal */}
+      <CreateFolderModal
+        isOpen={showCreateFolderModal}
+        onClose={() => {
+          setShowCreateFolderModal(false);
+          setFolderName("");
+        }}
+        onCreate={handleCreateFolder}
+        folderName={folderName}
+        setFolderName={setFolderName}
+        isFetchingShare={creatingFolder}
+      />
+    </>
+  );
+}

@@ -1,0 +1,290 @@
+const useDownloadManager = () => {
+  const token = localStorage.getItem("api_token");
+
+  const API_BASE =
+    "http://192.168.1.200/test_drive/project-googledrive/public/api/v1";
+
+  const log = (...args) =>
+    console.log("%c[DownloadManager]", "color:#0af", ...args);
+
+  const downloadBlob = (blob, filename) => {
+    log("download", filename, blob.size);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const getFilenameFromResponse = (res) => {
+    const disposition = res.headers.get("Content-Disposition");
+    if (!disposition) throw new Error("Backend ไม่ได้ส่ง filename มา");
+
+    const match =
+      disposition.match(/filename\*=UTF-8''([^;\n]+)/i) ||
+      disposition.match(/filename="?([^";\n]+)"?/i);
+
+    if (!match?.[1]) throw new Error("อ่าน filename จาก header ไม่ได้");
+    return decodeURIComponent(match[1]);
+  };
+
+  /* ===============================
+   * 🔑 ตัดสิน public / private (SOURCE OF TRUTH)
+   * =============================== */
+  const isPublicItems = (items = []) => {
+    const scopes = items.map((i) => i.permission?.scope);
+    log("permission scopes =", scopes);
+    return scopes.every((s) => s === "public");
+  };
+
+  const downloadItems = async (items = []) => {
+    if (!items.length) return;
+
+    const isPublic = isPublicItems(items);
+    const isSingleFile =
+      items.length === 1 && items[0].type === "file";
+
+    log("FINAL isPublic =", isPublic);
+
+    // 🔒 private เท่านั้นที่ต้อง login
+    if (!isPublic && !token) {
+      alert("กรุณาเข้าสู่ระบบก่อนดาวน์โหลดไฟล์นี้");
+      return;
+    }
+
+    try {
+      let url;
+      let options;
+
+      /* ===============================
+       * 📄 FILE เดียว
+       * =============================== */
+      if (isSingleFile) {
+        const item = items[0];
+
+        const permissionId =
+          item.permission?.id ||
+          item.resource_permission_id ||
+          item.shared_permission_id;
+
+        const fileId =
+          item.target_id ||
+          item?.data?.id ||
+          item?.id;
+
+        if (!permissionId || !fileId) {
+          throw new Error("Missing permission_id หรือ file_id");
+        }
+
+        url = isPublic
+          ? `${API_BASE}/public/shared/file/${permissionId}/download?file_id=${fileId}`
+          : `${API_BASE}/shared/file/${permissionId}/download?file_id=${fileId}`;
+
+        options = {
+          method: "GET",
+          headers: isPublic
+            ? {}
+            : { Authorization: `Bearer ${token}` },
+        };
+      }
+
+      /* ===============================
+       * 📦 หลายไฟล์ (ZIP)
+       * =============================== */
+      else {
+        url = isPublic
+          ? `${API_BASE}/public/shared/download-multiple`
+          : `${API_BASE}/shared/download-multiple`;
+
+        options = {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(isPublic ? {} : { Authorization: `Bearer ${token}` }),
+          },
+          body: JSON.stringify({
+            items: items.map((i) => ({
+              permission_id:
+                i.permission?.id ||
+                i.resource_permission_id ||
+                i.shared_permission_id,
+              target_type: i.type,
+              target_id:
+                i.target_id ||
+                i?.data?.id ||
+                i?.id,
+            })),
+          }),
+        };
+      }
+
+      log(isPublic ? "PUBLIC API" : "PRIVATE API", url);
+
+      const res = await fetch(url, options);
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "ดาวน์โหลดไม่สำเร็จ");
+      }
+
+      const blob = await res.blob();
+      const filename = getFilenameFromResponse(res);
+      downloadBlob(blob, filename);
+    } catch (err) {
+      console.error("[DownloadManager ERROR]", err);
+      alert(err.message || "ดาวน์โหลดไม่สำเร็จ");
+    }
+  };
+
+  return { downloadItems };
+};
+
+
+
+พับ
+const useDownloadManager = () => {
+  const token = localStorage.getItem("api_token");
+
+  const API_BASE =
+    "https://addpaycrypto.com/mydrive/service-api/mydrive/public/api/v1";
+
+  const log = (...args) =>
+    console.log("%c[DownloadManager]", "color:#0af", ...args);
+
+  const downloadBlob = (blob, filename) => {
+    log("download", filename, blob.size);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const getFilenameFromResponse = (res) => {
+    const disposition = res.headers.get("Content-Disposition");
+    if (!disposition) throw new Error("Backend ไม่ได้ส่ง filename มา");
+
+    const match =
+      disposition.match(/filename\*=UTF-8''([^;\n]+)/i) ||
+      disposition.match(/filename="?([^";\n]+)"?/i);
+
+    if (!match?.[1]) throw new Error("อ่าน filename จาก header ไม่ได้");
+    return decodeURIComponent(match[1]);
+  };
+
+  /* ===============================
+   * 🔑 ตัดสิน public / private (SOURCE OF TRUTH)
+   * =============================== */
+  const isPublicItems = (items = []) => {
+    const scopes = items.map((i) => i.permission?.scope);
+    log("permission scopes =", scopes);
+    return scopes.every((s) => s === "public");
+  };
+
+  const downloadItems = async (items = []) => {
+    if (!items.length) return;
+
+    const isPublic = isPublicItems(items);
+    const isSingleFile =
+      items.length === 1 && items[0].type === "file";
+
+    log("FINAL isPublic =", isPublic);
+
+    // 🔒 private เท่านั้นที่ต้อง login
+    if (!isPublic && !token) {
+      alert("กรุณาเข้าสู่ระบบก่อนดาวน์โหลดไฟล์นี้");
+      return;
+    }
+
+    try {
+      let url;
+      let options;
+
+      /* ===============================
+       * 📄 FILE เดียว
+       * =============================== */
+      if (isSingleFile) {
+        const item = items[0];
+
+        const permissionId =
+          item.permission?.id ||
+          item.resource_permission_id ||
+          item.shared_permission_id;
+
+        const fileId =
+          item.target_id ||
+          item?.data?.id ||
+          item?.id;
+
+        if (!permissionId || !fileId) {
+          throw new Error("Missing permission_id หรือ file_id");
+        }
+
+        url = isPublic
+          ? `${API_BASE}/public/shared/file/${permissionId}/download?file_id=${fileId}`
+          : `${API_BASE}/shared/file/${permissionId}/download?file_id=${fileId}`;
+
+        options = {
+          method: "GET",
+          headers: isPublic
+            ? {}
+            : { Authorization: `Bearer ${token}` },
+        };
+      }
+
+      /* ===============================
+       * 📦 หลายไฟล์ (ZIP)
+       * =============================== */
+      else {
+        url = isPublic
+          ? `${API_BASE}/public/shared/download-multiple`
+          : `${API_BASE}/shared/download-multiple`;
+
+        options = {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(isPublic ? {} : { Authorization: `Bearer ${token}` }),
+          },
+          body: JSON.stringify({
+            items: items.map((i) => ({
+              permission_id:
+                i.permission?.id ||
+                i.resource_permission_id ||
+                i.shared_permission_id,
+              target_type: i.type,
+              target_id:
+                i.target_id ||
+                i?.data?.id ||
+                i?.id,
+            })),
+          }),
+        };
+      }
+
+      log(isPublic ? "PUBLIC API" : "PRIVATE API", url);
+
+      const res = await fetch(url, options);
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "ดาวน์โหลดไม่สำเร็จ");
+      }
+
+      const blob = await res.blob();
+      const filename = getFilenameFromResponse(res);
+      downloadBlob(blob, filename);
+    } catch (err) {
+      console.error("[DownloadManager ERROR]", err);
+      alert(err.message || "ดาวน์โหลดไม่สำเร็จ");
+    }
+  };
+
+  return { downloadItems };
+};
