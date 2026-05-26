@@ -24,6 +24,7 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  base: "/mydrive/service-ui/mydrive",
   server: {
     host: "127.0.0.1",
     port: 5173,
