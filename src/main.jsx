@@ -26,7 +26,7 @@ import "./index.css";
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     {/* 2. เปลี่ยนจาก base เป็น basename */}
-    <BrowserRouter basename="/mydrive/service-ui/mydrive">
+    <BrowserRouter>
       <GoogleOAuthProvider clientId="26347662510-jupv2fe9flsvd8f3nejaqet8jimtkhi8.apps.googleusercontent.com">
         
 
